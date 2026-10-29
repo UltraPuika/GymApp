@@ -1,0 +1,58 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The release key must stay the same for every build, otherwise the phone refuses updates.
+      - name: Restore release key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::error::Add the KEYSTORE_BASE64 and KEYSTORE_PASSWORD repository secrets (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+          mkdir -p keystore
+          echo "$KEYSTORE_BASE64" | base64 -d > keystore/gymlog-release.jks
+          printf 'storeFile=keystore/gymlog-release.jks\nstorePassword=%s\nkeyAlias=gymlog\nkeyPassword=%s\n' "$KEYSTORE_PASSWORD" "$KEYSTORE_PASSWORD" > keystore.properties
+
+      - name: Build
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Rename APK
+        run: mv app/build/outputs/apk/release/app-release.apk GymLog-${{ github.run_number }}.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GymLog-${{ github.run_number }}
+          path: GymLog-${{ github.run_number }}.apk
+
+      # A release gives a direct download link that works from the phone's browser.
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: GymLog build ${{ github.run_number }}
+          body: Built from ${{ github.sha }}. Install over the previous version to keep your data.
+          files: GymLog-${{ github.run_number }}.apk
+          make_latest: true

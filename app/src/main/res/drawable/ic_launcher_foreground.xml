@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Barbell in the app's accent green; drawn inside the 66dp adaptive-icon safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- bar -->
+    <path android:fillColor="#8FD3A8" android:pathData="M26,51.5h56v5h-56z" />
+    <!-- left plates -->
+    <path android:fillColor="#8FD3A8" android:pathData="M33,36h6a2,2 0,0 1,2 2v32a2,2 0,0 1,-2 2h-6a2,2 0,0 1,-2 -2v-32a2,2 0,0 1,2 -2z" />
+    <path android:fillColor="#8FD3A8" android:pathData="M43.5,42h4a2,2 0,0 1,2 2v20a2,2 0,0 1,-2 2h-4a2,2 0,0 1,-2 -2v-20a2,2 0,0 1,2 -2z" />
+    <!-- right plates -->
+    <path android:fillColor="#8FD3A8" android:pathData="M69,36h6a2,2 0,0 1,2 2v32a2,2 0,0 1,-2 2h-6a2,2 0,0 1,-2 -2v-32a2,2 0,0 1,2 -2z" />
+    <path android:fillColor="#8FD3A8" android:pathData="M60.5,42h4a2,2 0,0 1,2 2v20a2,2 0,0 1,-2 2h-4a2,2 0,0 1,-2 -2v-20a2,2 0,0 1,2 -2z" />
+</vector>
