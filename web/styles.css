@@ -13,6 +13,7 @@ header { padding: 16px 18px 8px; display: flex; align-items: center; gap: 8px; m
 header h1 { font-size: 21px; font-weight: 650; letter-spacing: -.2px; }
 header .sub { font-size: 12px; color: var(--t2); }
 header .grow { flex: 1; }
+header .icon svg { width: 22px; height: 22px; display: block; }
 main { flex: 1; overflow-y: auto; padding: 4px 14px 24px; display: flex; flex-direction: column; gap: 12px; }
 
 nav { display: flex; background: var(--s); height: 64px; flex-shrink: 0; border-top: 1px solid #22262d; }

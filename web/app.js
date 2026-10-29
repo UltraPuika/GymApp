@@ -363,6 +363,7 @@ function handleBack() {
   render();
   return true;
 }
+const SETTINGS_BTN = `<button class="icon" title="Settings" aria-label="Settings" onclick="openSettings()">${svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>')}</button>`;
 function setTop(title, sub = "", actions = "") {
   $("topbar").innerHTML = `<div class="grow"><h1>${title}</h1>${sub ? `<div class="sub">${sub}</div>` : ""}</div>${actions}`;
 }
@@ -379,7 +380,7 @@ function renderHome() {
   const prog = currentProgram();
   const { todo, done, doneOn } = weekOrder(prog);
   const b = activeBlock();
-  setTop("GymLog", niceDate(today()), `<button class="icon" title="Settings" aria-label="Settings" onclick="openSettings()">${svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>')}</button>`);
+  setTop("GymLog", niceDate(today()), SETTINGS_BTN);
   const w = db.workout;
   const active = w && w.programId === prog.id ? w.dayIdx : null;
   // The day in progress always comes first; otherwise the first day still to do is next.
@@ -651,7 +652,7 @@ function renderHistory() {
   const cell = (groups, c) => (c < nCols - 1 ? (groups[c] ? setText(groups[c]) : "") : groups.slice(c).map(setText).join("<br>"));
   const label = name ? bestLabel(name) : "";
   const chartTitle = { e1RM: `Estimated 1RM${exByName(name)?.bw ? " (incl. 0.9×bodyweight)" : ""}`, "Max reps": "Max reps", "Longest hold": "Longest hold (seconds)" }[label];
-  setTop("History", "By lift");
+  setTop("History", "By lift", SETTINGS_BTN);
   $("main").innerHTML = `${histToggle()}
     <select onchange="ui.hist.lift=this.value;render()">${lifts.map((n) => `<option ${n === name ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
     ${rangeChips()}
@@ -790,7 +791,7 @@ function deleteRun() {
   ui.modal = null; save(); toast("Run deleted");
 }
 function renderRuns() {
-  setTop("History", "Runs");
+  setTop("History", "Runs", SETTINGS_BTN);
   const runs = db.runs.filter((r) => inHistRange(r.date)).sort((a, b) => (a.date < b.date ? 1 : -1));
   const weekly = {};
   runs.forEach((r) => (weekly[mondayOf(r.date)] = (weekly[mondayOf(r.date)] || 0) + r.km));
@@ -911,7 +912,7 @@ const REP_PRS = [1, 2, 3, 4, 5, 6, 8, 10];
 const STAT_TABS = [["records", "Lifts"], ["other", "Other bests"], ["bodyweight", "Bodyweight"]];
 function renderStats() {
   const tabs = `<div class="seg">${STAT_TABS.map(([k, l]) => `<button class="${ui.statTab === k ? "sel" : ""}" onclick="ui.statTab='${k}';render()">${l}</button>`).join("")}</div>`;
-  setTop("Stats", "Personal records", `<button class="btn sm" onclick="openCalc()">Calculator</button>`);
+  setTop("Stats", "Personal records", `<button class="btn sm" onclick="openCalc()">Calculator</button>${SETTINGS_BTN}`);
   $("main").innerHTML = tabs + ({ records: statsRecords, bodyweight: statsBodyweight, other: statsOther })[ui.statTab]();
 }
 function statsBodyweight() {
@@ -1076,7 +1077,7 @@ function revertPr() {
 const progToggle = () => `<div class="seg">${[["programs", "Splits"], ["exercises", "Exercises"]].map(([k, l]) =>
   `<button class="${ui.progTab === k ? "sel" : ""}" onclick="ui.progTab='${k}';render()">${l}</button>`).join("")}</div>`;
 function renderPrograms() {
-  setTop("Splits", `${db.programs.length} splits`, `<button class="btn sm" onclick="openProgramBuilder()">＋ New</button>`);
+  setTop("Splits", `${db.programs.length} splits`, `<button class="btn sm" onclick="openProgramBuilder()">＋ New</button>${SETTINGS_BTN}`);
   const ordered = [currentProgram(), ...db.programs.filter((p) => p.id !== db.currentProgramId)];
   $("main").innerHTML = progToggle() + ordered.map((p) => {
     const open = ui.progOpen[p.id] ?? p.id === db.currentProgramId;
@@ -1150,7 +1151,7 @@ function renderBlocks() {
     <span class="title grow" style="text-align:left">${label} · ${n}</span><span>${ui[key] ? "▴" : "▾"}</span></button>`;
   if (tab === "running") {
     const act = activeRunPlan(), past = db.runPlans.filter((p) => !p.active).sort((a, b) => (a.start < b.start ? 1 : -1));
-    setTop("Blocks", "Running plans", `<button class="btn sm" onclick="openRunBuilder()">＋ New plan</button>`);
+    setTop("Blocks", "Running plans", `<button class="btn sm" onclick="openRunBuilder()">＋ New plan</button>${SETTINGS_BTN}`);
     $("main").innerHTML = `${segTabs([["strength", "Strength"], ["running", "Running"]], tab, "blockTab")}
       ${act ? runPlanCard(act) : `<div class="card muted">No active running plan. Start one with ＋ New plan, or reuse a previous plan below.</div>`}
       ${past.length ? pastToggle("pastRunOpen", "Previous plans", past.length) + (ui.pastRunOpen ? past.map(runPlanCard).join("") : "") : ""}`;
@@ -1158,7 +1159,7 @@ function renderBlocks() {
   }
   const act = activeBlock();
   const past = db.blocks.filter((b) => !b.active).slice().reverse();
-  setTop("Blocks", "Periodization for main lifts", `<button class="btn sm" onclick="openBlockBuilder()">＋ New block</button>`);
+  setTop("Blocks", "Periodization for main lifts", `<button class="btn sm" onclick="openBlockBuilder()">＋ New block</button>${SETTINGS_BTN}`);
   $("main").innerHTML = `${segTabs([["strength", "Strength"], ["running", "Running"]], tab, "blockTab")}
     ${act ? blockCard(act) : `<div class="card muted">No active block. Workouts are pre-filled from your last session.</div>`}
     ${past.length ? pastToggle("pastBlocksOpen", "Previous blocks", past.length) + (ui.pastBlocksOpen ? past.map(blockCard).join("") : "") : ""}
@@ -1364,7 +1365,7 @@ function renderExercises() {
   const list = db.exercises.filter((e) => (ui.exPattern === "All" || (ui.exPattern === "Main lifts" ? e.main : e.pattern === ui.exPattern)) &&
     (!qText || [e.name, e.muscle, e.pattern].some((s) => s.toLowerCase().includes(qText))));
   const groups = PATTERNS.filter((p) => list.some((e) => e.pattern === p));
-  setTop("Exercises", `${db.exercises.length} exercises`, `<button class="btn sm" onclick="openExercise()">＋ Add</button>`);
+  setTop("Exercises", `${db.exercises.length} exercises`, `<button class="btn sm" onclick="openExercise()">＋ Add</button>${SETTINGS_BTN}`);
   $("main").innerHTML = `${progToggle()}
     <input id="ex-search" placeholder="Search name, muscle, pattern…" value="${esc(ui.exq)}" oninput="ui.exq=this.value;searchExercises()">
     <div class="hscroll">${["All", "Main lifts", ...PATTERNS].map((p) => `<button class="fchip ${ui.exPattern === p ? "sel" : ""}" onclick="ui.exPattern=${q(p)};render()">${p}</button>`).join("")}</div>

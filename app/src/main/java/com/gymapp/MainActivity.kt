@@ -8,6 +8,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.SystemBarStyle
@@ -51,11 +52,16 @@ class MainActivity : ComponentActivity() {
                     request.url.host != WebViewAssetLoader.DEFAULT_DOMAIN
             }
         }
-        setContentView(webView)
+        // WebView ignores its own padding, so inset a container instead.
+        val root = FrameLayout(this).apply {
+            setBackgroundColor(Color.parseColor("#0E1013"))
+            addView(webView)
+        }
+        setContentView(root)
 
-        // Keep content clear of status/navigation bars and the keyboard.
-        ViewCompat.setOnApplyWindowInsetsListener(webView) { v, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
+        // Keep content clear of status/navigation bars, display cutouts and the keyboard.
+        ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime())
             v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
             WindowInsetsCompat.CONSUMED
         }
