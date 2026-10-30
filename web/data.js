@@ -149,6 +149,13 @@ const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const MEASURES = [["reps", "Reps"], ["time", "Time (static hold)"]];
 const LOADS = [["kg", "Weight (kg)"], ["bw", "Bodyweight"], ["bw+", "Bodyweight + kg"]];
 
+/** Broad exercise groups for browsing outside a slot's suggestions. */
+const EX_GROUPS = [
+  ["Push", ["Horizontal Push", "Vertical Push"]], ["Pull", ["Horizontal Pull", "Vertical Pull"]],
+  ["Legs", ["Squat", "Hinge", "Lunge", "Leg Isolation"]], ["Upper isolation", ["Upper Isolation"]],
+  ["Arms & grip", ["Arms", "Grip"]], ["Core", ["Core"]], ["Skills & prehab", ["Skill", "Prehab"]],
+];
+
 /** Generic placeholders in the programs — tapping one lets you pick a matching exercise. */
 const SLOTS = {
   "Push exercise": (e) => ["Horizontal Push", "Vertical Push"].includes(e.pattern) && e.mechanic === "Compound",

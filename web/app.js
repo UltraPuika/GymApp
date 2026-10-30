@@ -2,7 +2,7 @@
 // Inside the Android app data goes to its SQLite database (AndroidDb bridge); in a browser to localStorage.
 const storage = window.AndroidDb ?? localStorage;
 const STORE = "gymlog-db";
-const SCHEMA = 4;
+const SCHEMA = 5;
 ["ironlog-v1", "ironlog-v2"].forEach((k) => storage.removeItem(k));
 // Keep data saved under the app's former name.
 if (!storage.getItem(STORE) && storage.getItem("ironlog-db")) storage.setItem(STORE, storage.getItem("ironlog-db"));
@@ -37,6 +37,14 @@ const MIGRATIONS = {
   4: (d) => {
     d.settings ??= { bar: 20, plates: [25, 20, 15, 10, 5, 2.5, 1.25], step: 2.5 };
     d.dayLog ??= [];
+  },
+  // Test weeks ramp 80% → 90% → target instead of 90% → 95% → target.
+  5: (d) => {
+    const kg = d.bodyweights.slice().sort((a, b) => (a.date < b.date ? -1 : 1)).at(-1)?.kg ?? DEFAULT_BW;
+    d.blocks.forEach((b) => b.lifts.forEach((l) => {
+      const wk = l.plan.at(-1);
+      if (wk?.test) l.plan[l.plan.length - 1] = testWeek(l.lift, wk.sets.at(-1).w, d.exercises.find((e) => e.name === l.lift)?.bw ? BW_FACTOR * kg : 0);
+    }));
   },
 };
 function migrate(d) {
@@ -91,7 +99,7 @@ const niceDate = (iso) => new Date(iso + "T00:00").toLocaleDateString(undefined,
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const q = (s) => esc(JSON.stringify(s));
 const $ = (id) => document.getElementById(id);
-const r25 = (v) => Rpe.round(v, STEP);
+function r25(v) { return Rpe.round(v, STEP); } // a declaration, so migrations can use it
 
 const exByName = (name) => db.exercises.find((e) => e.name.toLowerCase() === String(name).toLowerCase());
 const mainLifts = () => db.exercises.filter((e) => e.main).map((e) => e.name);
@@ -115,17 +123,21 @@ function setCount(text) {
 }
 const setsLabel = (s) => (/x$/i.test(String(s)) ? s : `${s}x`);
 
-/** Program label → a concrete exercise, a placeholder slot, or an "A / B" choice. */
-function resolveItem(label) {
+/** Program label → a concrete exercise, a placeholder slot (limited to pool when the split picked some), or an "A / B" choice. */
+function resolveItem(label, pool) {
   const ex = exByName(label);
   if (ex) return { exercise: ex.name };
-  if (SLOTS[label]) return { options: db.exercises.filter(SLOTS[label]).map((e) => e.name) };
+  if (SLOTS[label]) {
+    const all = slotExercises(label), picked = all.filter((n) => pool?.includes(n));
+    return { options: picked.length ? picked : all };
+  }
   if (label.includes(" / ")) {
     const opts = label.split(" / ").map((s) => exByName(s.trim())?.name).filter(Boolean);
     return opts.length === 1 ? { exercise: opts[0] } : { options: opts };
   }
   return { options: db.exercises.map((e) => e.name) };
 }
+const slotExercises = (label) => db.exercises.filter(SLOTS[label]).map((e) => e.name);
 /** Swap candidates for an exercise: same movement pattern. */
 function alternativesFor(item) {
   if (item.options) return item.options;
@@ -318,7 +330,18 @@ function doNext(i) {
 
 // ================= UI shell =================
 const ui = { tab: "home", view: "home", toast: null, hist: { lift: "Squat", range: "1Y", mode: "lifts" }, progOpen: {}, progTab: "programs", statTab: "records", pb: null, be: null, rb: null, blockOpen: {}, exq: "", exPattern: "All", modal: null, rpeBase: "" };
-const svg = (paths) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+const svg = (paths, cls = "") => `<svg ${cls ? `class="${cls}" ` : ""}viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+/** Inline pictograms; they take the colour and size of the surrounding text. */
+const ICONS = {
+  check: '<path d="M20 6 9 17l-5-5"/>', x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>', minus: '<path d="M5 12h14"/>',
+  trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>',
+  swap: '<path d="M7 4 3 8l4 4M3 8h14M17 20l4-4-4-4M21 16H7"/>',
+  play: '<path d="M8 5v14l11-7z"/>', circle: '<circle cx="12" cy="12" r="7"/>', skip: '<path d="M5 5l10 7-10 7zM19 5v14"/>',
+  up: '<path d="m18 15-6-6-6 6"/>', down: '<path d="m6 9 6 6 6-6"/>', arrowUp: '<path d="M12 19V5M5 12l7-7 7 7"/>',
+};
+const ic = (name) => svg(ICONS[name], "ic");
+const chev = (open) => ic(open ? "up" : "down");
 const TABS = [
   ["history", "History", svg('<path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/>')],
   ["stats", "Stats", svg('<path d="M8 21h8M12 17v4"/><path d="M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M17 6h3v1a3 3 0 0 1-3 3M7 6H4v1a3 3 0 0 0 3 3"/>')],
@@ -392,7 +415,7 @@ function renderHome() {
   $("main").innerHTML = `
     ${backupDue ? `<button class="card row" onclick="openSettings()"><span class="grow muted">${db.lastExport ? `Last backup ${daysBetween(db.lastExport, today())} days ago` : "No backup yet"}</span><b class="lime">Back up</b></button>` : ""}
     ${hasRun ? segTabs([["gym", "Gym"], ["running", `Running${runDueToday() ? " •" : ""}`]], tab, "homeTab") : ""}
-    ${tab === "running" ? `${runCard()}<button class="btn-t" style="align-self:flex-start" onclick="openRun(null)">+ Log another run</button>` : `
+    ${tab === "running" ? `${runCard()}<button class="btn-t" style="align-self:flex-start" onclick="openRun(null)">${ic("plus")} Log another run</button>` : `
     ${w ? `<button class="card resume" onclick="ui.view='day';render()">
         <div class="muted">WORKOUT IN PROGRESS</div>
         <div class="ex-name">${esc(program(w.programId)?.days[w.dayIdx]?.name)}</div>
@@ -400,7 +423,7 @@ function renderHome() {
     <div><div class="title">Current split</div><div class="ex-name">${esc(prog.name)}</div>
       ${b ? `<div class="muted">Active block: <b class="lime">${esc(b.name)}</b> · week ${Math.min(Math.max(blockWeek(b), 1), b.weeks)}/${b.weeks}</div>` : ""}</div>
     ${order.map((i) => dayCard(prog.days[i], i, { active: i === active, next: active == null && i === todo[0], doneOn: doneOn[i], locked: !!w && i !== active, canMove: active == null && todo.includes(i) && i !== todo[0] })).join("")}
-    ${todo.length ? "" : `<div class="muted" style="text-align:center">All days done this week 💪 New week starts in standard order.</div>`}`}`;
+    ${todo.length ? "" : `<div class="muted" style="text-align:center">All days done this week. New week starts in standard order.</div>`}`}`;
 }
 /** Segmented tabs bound to ui[key], like the Stats tabs. */
 const segTabs = (tabs, cur, key) => `<div class="seg">${tabs.map(([k, l]) =>
@@ -410,7 +433,7 @@ function dayCard(d, i, s) {
   const goals = d.items.map((it) => resolveItem(it.label).exercise).filter(Boolean)
     .map((ex) => ({ ex, p: planFor(ex) })).filter(({ p }) => p.type === "block");
   const badge = s.active ? `<span class="badge">IN PROGRESS</span>` : s.next ? `<span class="badge">NEXT UP</span>`
-    : s.doneOn ? `<span class="badge done">✓ ${WEEKDAYS[(new Date(s.doneOn + "T00:00").getDay() + 6) % 7]}</span>` : "";
+    : s.doneOn ? `<span class="badge done">${ic("check")} ${WEEKDAYS[(new Date(s.doneOn + "T00:00").getDay() + 6) % 7]}</span>` : "";
   const btn = s.locked ? `<button class="btn-o start" disabled>Finish the current workout first</button>`
     : `<button class="${s.active || s.next ? "btn" : "btn-o"} start" onclick="startDay(${i})">${s.active ? "Continue" : s.doneOn ? "Do again" : "Start"} ${esc(d.name)}</button>`;
   return `<div class="card day ${s.active || s.next ? "next" : ""} ${s.doneOn && !s.active ? "done-day" : ""}">
@@ -432,7 +455,7 @@ function startDay(dayIdx) {
     db.workout = {
       programId: prog.id, dayIdx, date: today(), current: 0, bw: fmt(bwAt()),
       items: prog.days[dayIdx].items.map((it) => {
-        const r = resolveItem(it.label);
+        const r = resolveItem(it.label, it.pool);
         return { label: it.label, sets: it.sets, exercise: r.exercise ?? null, options: r.options ?? null, status: "pending", rows: null, planType: null, logIds: [] };
       }),
     };
@@ -455,7 +478,7 @@ function renderDay() {
   if (!w) { ui.view = "home"; return renderHome(); }
   const prog = program(w.programId), day = prog.days[w.dayIdx];
   setTop(day.name, `${esc(prog.name)} · <input type="date" class="inline-date" value="${w.date}" onchange="db.workout.date=this.value;save()">`,
-    `<button class="icon" title="Back" onclick="ui.view='home';render()">✕</button>`);
+    `<button class="icon" title="Back" onclick="ui.view='home';render()">${ic("x")}</button>`);
   const cur = w.items[w.current];
   if (cur) ensureRows(cur);
   const done = w.items.filter((i) => i.status !== "pending").length;
@@ -463,12 +486,12 @@ function renderDay() {
     <div class="card row bw-row"><span class="grow">Bodyweight today</span>
       <input inputmode="decimal" value="${esc(w.bw ?? "")}" onchange="setWorkoutBw(this.value)"><span class="muted">kg</span></div>
     <div class="progress"><div style="width:${(done / w.items.length) * 100}%"></div></div>
-    ${cur ? (ui.swap === w.current ? swapCard(cur, w.current) : upNextCard(cur, w.current)) : `<div class="card done-card"><div class="ex-name">All done 💪</div>
+    ${cur ? (ui.swap === w.current ? swapCard(cur, w.current) : upNextCard(cur, w.current)) : `<div class="card done-card"><div class="ex-name">All done</div>
         <div class="muted">${w.items.filter((i) => i.status === "done").length} exercises logged for ${dmy(w.date)}.</div>
         <button class="btn" onclick="finishWorkout()">Finish workout</button></div>`}
     <div class="title">Today's plan</div>
     ${w.items.map((it, i) => itemRow(it, i)).join("")}
-    <button class="btn-t" style="align-self:flex-start" onclick="openAddExercise()">+ Add exercise</button>
+    <button class="btn-t" style="align-self:flex-start" onclick="openAddExercise()">${ic("plus")} Add exercise</button>
     ${cur ? `<button class="btn-o" style="text-align:center" onclick="finishWorkout()">Finish workout early</button>` : ""}
     <button class="btn-t red" onclick="discardWorkout()">Discard workout</button>`;
 }
@@ -476,12 +499,18 @@ function renderDay() {
 function swapCard(item, i) {
   if (ui.pick?.i !== i) ui.pick = { i, sel: item.exercise ? [item.exercise] : [] };
   const sel = ui.pick.sel;
+  // "Suggested" = the slot's options / same pattern; the other filters reach any exercise in the library.
+  const f = ui.pick.filter ?? "";
+  const base = f ? db.exercises.filter((e) => f === "All" || EX_GROUPS.find(([g]) => g === f)[1].includes(e.pattern)).map((e) => e.name) : alternativesFor(item);
+  const filters = [["", "Suggested"], ["All", "All"], ...EX_GROUPS.filter(([, ps]) => db.exercises.some((e) => ps.includes(e.pattern))).map(([g]) => [g, g])];
   return `<div class="card up"><div class="muted">CHOOSE EXERCISES · ${esc(item.label)}</div>
     <div class="muted">Tap one or more — each gets its own sets.</div>
-    <div class="opt-list">${alternativesFor(item).map((o) => {
+    <div class="hscroll">${filters.map(([k, l]) => `<button class="fchip ${f === k ? "sel" : ""}" onclick="ui.pick.filter=${q(k)};render()">${esc(l)}</button>`).join("")}</div>
+    <div class="opt-list">${[...sel.filter((o) => !base.includes(o)), ...base].map((o) => {
       const k = sel.indexOf(o);
       return `<button class="fchip ${k >= 0 ? "sel" : ""}" onclick="togglePick(${q(o)})">${k >= 0 ? `<b>${k + 1}</b> ` : ""}${esc(o)}</button>`;
     }).join("")}</div>
+    <button class="btn-t" style="align-self:flex-start" onclick="openExercise(null,'pick')">${ic("plus")} New exercise</button>
     <div class="row"><span class="grow"></span>
       ${item.exercise ? `<button class="btn-t" onclick="ui.swap=null;ui.pick=null;render()">Cancel</button>` : ""}
       <button class="btn" ${sel.length ? "" : "disabled"} onclick="applyPick(${i})">Use ${sel.length > 1 ? `${sel.length} exercises` : "exercise"}</button></div></div>`;
@@ -491,13 +520,16 @@ function togglePick(name) {
   k >= 0 ? sel.splice(k, 1) : sel.push(name);
   render();
 }
-/** First pick fills this slot; every extra pick becomes its own item right after it, in tap order. */
+/**
+ * Picks replace this slot in tap order, each as its own item. An exercise that stays keeps its item and the
+ * sets already entered; if it was dropped, the first pick takes over the item with fresh sets.
+ */
 function applyPick(i) {
-  const w = db.workout, it = w.items[i], [first, ...rest] = ui.pick.sel;
-  it.exercise = first; it.rows = null;
-  w.items.splice(i + 1, 0, ...rest.map((name) => ({
-    label: it.label, sets: it.sets, exercise: name, options: it.options, status: "pending", rows: null, planType: null, logIds: [],
-  })));
+  const w = db.workout, it = w.items[i], sel = ui.pick.sel, keep = sel.includes(it.exercise);
+  const items = sel.map((name, k) => name === it.exercise ? it
+    : !keep && k === 0 ? Object.assign(it, { exercise: name, rows: null, planType: null })
+    : { label: it.label, sets: it.sets, exercise: name, options: it.options, status: "pending", rows: null, planType: null, logIds: [] });
+  w.items.splice(i, 1, ...items);
   ui.swap = null; ui.pick = null;
   save(); render();
 }
@@ -508,19 +540,19 @@ function upNextCard(item, i) {
   return `<div class="card up">
     <div class="row"><div class="grow"><div class="muted">UP NEXT · ${i + 1} of ${w.items.length}</div>
       <div class="ex-name">${esc(item.exercise)}</div></div>
-      <button class="btn-o sm" onclick="ui.swap=${i};render()">⇄ Change</button></div>
+      <button class="btn-o sm" onclick="ui.swap=${i};render()">${ic("swap")} Change</button></div>
     ${setsTable(item.exercise, item.rows, (j, f) => `setRow(${i},${j},'${f}',this.value)`, (j) => `cycleBand(${i},${j})`,
-      (r, j) => `<button class="tick ${r.done ? "on" : ""}" onclick="toggleDone(${i},${j})">✓</button>`, (r) => (r.done ? "set-done" : ""))}
-    <div class="row"><button class="btn-t" onclick="addRow(${i})">+ Set</button>
-      ${item.rows.length > 1 ? `<button class="btn-t muted" onclick="removeRow(${i})">− Set</button>` : ""}
+      (r, j) => `<button class="tick ${r.done ? "on" : ""}" onclick="toggleDone(${i},${j})">${ic("check")}</button>`, (r) => (r.done ? "set-done" : ""))}
+    <div class="row"><button class="btn-t" onclick="addRow(${i})">${ic("plus")} Set</button>
+      ${item.rows.length > 1 ? `<button class="btn-t muted" onclick="removeRow(${i})">${ic("minus")} Set</button>` : ""}
       <span class="grow"></span><button class="btn-t" onclick="skipItem(${i})">Skip</button>
-      <button class="btn" onclick="completeItem(${i})">Complete ✓</button></div>
+      <button class="btn" onclick="completeItem(${i})">Complete ${ic("check")}</button></div>
   </div>`;
 }
 
 function itemRow(it, i) {
   const w = db.workout;
-  const icon = it.status === "done" ? "✓" : it.status === "skipped" ? "⤼" : i === w.current ? "▶" : "○";
+  const icon = ic(it.status === "done" ? "check" : it.status === "skipped" ? "skip" : i === w.current ? "play" : "circle");
   let summary;
   if (it.status === "skipped") summary = "skipped";
   else if (!it.exercise) summary = "choose exercise";
@@ -534,7 +566,7 @@ function itemRow(it, i) {
     <span class="st">${icon}</span>
     <div class="grow"><div><span class="mono muted">${esc(setsLabel(it.sets))}</span> ${esc(it.exercise ?? it.label)}</div>
       <div class="muted mono" style="font-size:12px">${esc(summary)}</div></div></button>
-    <button class="icon" title="Remove from workout" aria-label="Remove from workout" onclick="removeItem(${i})">✕</button></div>`;
+    <button class="icon" title="Remove from workout" aria-label="Remove from workout" onclick="removeItem(${i})">${ic("x")}</button></div>`;
 }
 
 /** Removes an exercise from today's workout; sets already saved for it are deleted with it. */
@@ -554,7 +586,7 @@ function addExerciseList() {
   const qText = ui.modal.q.trim().toLowerCase();
   const list = db.exercises.filter((e) => !qText || [e.name, e.muscle, e.pattern].some((s) => s.toLowerCase().includes(qText)));
   $("addex-list").innerHTML = list.map((e) => `<button class="item" onclick="addExercise(${q(e.name)})">
-    <div class="grow"><div>${esc(e.name)}</div><div class="muted" style="font-size:12px">${esc(e.muscle)} · ${esc(e.pattern)}</div></div><span class="lime">＋</span></button>`).join("")
+    <div class="grow"><div>${esc(e.name)}</div><div class="muted" style="font-size:12px">${esc(e.muscle)} · ${esc(e.pattern)}</div></div><span class="lime">${ic("plus")}</span></button>`).join("")
     || `<div class="empty">No match — add it in Splits → Exercises</div>`;
 }
 function addExercise(name) {
@@ -664,7 +696,7 @@ function renderHistory() {
         <td class="mono lime">${bestText(name, s.e1)}</td></tr>`).join("")}
       </table>${inRange.length ? "" : `<div class="empty">No sessions in this range</div>`}
       ${name ? `<div class="row" style="padding:6px"><span class="muted grow">Tap a session to fix or delete it.</span>
-        <button class="btn-t" onclick="editSession(null)">+ Add session</button></div>` : ""}
+        <button class="btn-t" onclick="editSession(null)">${ic("plus")} Add session</button></div>` : ""}
     </div>`;
 }
 function editSession(date) {
@@ -726,7 +758,7 @@ function runCard() {
   }
   if (wk > n) {
     return `<div class="card day col">${head(`<span class="badge">DONE</span>`)}
-      <div class="muted">All ${n} weeks finished 🎉 Start a new plan in Blocks → Running plans.</div>
+      <div class="muted">All ${n} weeks finished. Start a new plan in Blocks → Running plans.</div>
       <button class="btn-o start" onclick="stopRunPlan(${p.id})">Close plan</button></div>`;
   }
   const week = planWeek(p, wk), dow = todayDow();
@@ -743,13 +775,13 @@ function runCard() {
     ${order.map((k) => {
       const s = week[k], isToday = s.day === dow && !s.run;
       return `<button class="item ${s.run ? "done" : ""} ${isToday ? "cur" : ""}" onclick="${s.run ? `openRun(${s.run.id})` : `openRun(null,${k})`}">
-        <span class="st">${s.run ? "✓" : "○"}</span>
+        <span class="st">${ic(s.run ? "check" : "circle")}</span>
         <div class="grow"><div><b>${esc(s.type)}</b> ${fmt(s.km)} km <span class="muted">· ${WEEKDAYS[s.day] ?? ""}</span>${isToday ? ' <span class="badge">TODAY</span>' : ""}</div>
           <div class="muted" style="font-size:12px">${s.run ? `Done ${dmy(s.run.date)}: ${fmt(s.run.km)} km${s.run.sec ? ` in ${fmtDur(s.run.sec)} · ${paceText(s.run)}` : ""}${s.run.hr ? ` · ${s.run.hr} bpm` : ""}` : esc(s.note || "Tap to log")}</div></div>
         ${s.run ? "" : `<span class="lime" style="font-size:13px;font-weight:600">Log</span>`}</button>`;
     }).join("")}
     ${next != null ? `<button class="${runDueToday() ? "btn" : "btn-o"} start" onclick="openRun(null,${next})">Log ${esc(week[next].type.toLowerCase())} run · ${fmt(week[next].km)} km</button>`
-      : `<div class="muted" style="text-align:center">Week ${wk} done 💪 Next week: ${(p.weeks[wk] ?? []).map((s) => `${esc(s.type.toLowerCase())} ${fmt(s.km)}`).join(" · ") || "plan ends"}</div>`}
+      : `<div class="muted" style="text-align:center">Week ${wk} done. Next week: ${(p.weeks[wk] ?? []).map((s) => `${esc(s.type.toLowerCase())} ${fmt(s.km)}`).join(" · ") || "plan ends"}</div>`}
   </div>`;
 }
 function openRun(id, plannedIdx = null) {
@@ -803,7 +835,7 @@ function renderRuns() {
       ${runs.map((r) => `<tr class="tap" onclick="openRun(${r.id})"><td class="mono">${dmy(r.date)}</td><td>${esc(r.type)}</td><td class="mono">${fmt(r.km)}</td>
         <td class="mono">${r.sec ? fmtDur(r.sec) : "–"}</td><td class="mono lime">${paceText(r).replace("/km", "")}</td><td class="mono muted">${r.hr ?? ""}</td></tr>`).join("")}
       </table>${runs.length ? "" : `<div class="empty">No runs in this range</div>`}
-      <div class="row" style="padding:6px"><span class="muted grow">Tap a run to edit it.</span><button class="btn-t" onclick="openRun(null)">+ Log run</button></div></div>`;
+      <div class="row" style="padding:6px"><span class="muted grow">Tap a run to edit it.</span><button class="btn-t" onclick="openRun(null)">${ic("plus")} Log run</button></div></div>`;
 }
 /** Best times from logged runs: time at that run's average pace, from runs at least that long. */
 function runningBests() {
@@ -825,7 +857,7 @@ function runPlanCard(p) {
   return `<div class="card ${p.active ? "cur-prog" : ""}">
     <div class="row" style="cursor:pointer" onclick="ui.blockOpen['r${p.id}']=${!open};render()">
       <div class="grow"><b>${esc(p.name)}</b> ${p.active ? '<span class="badge">ACTIVE</span>' : ""}
-        <div class="muted">${dmy(p.start)} – ${dmy(end)} · ${p.weeks.length} weeks${p.active && wk >= 1 && wk <= p.weeks.length ? ` · now week ${wk}` : ""}</div></div><span>${open ? "▴" : "▾"}</span></div>
+        <div class="muted">${dmy(p.start)} – ${dmy(end)} · ${p.weeks.length} weeks${p.active && wk >= 1 && wk <= p.weeks.length ? ` · now week ${wk}` : ""}</div></div><span>${chev(open)}</span></div>
     ${open ? `<table class="hist fit"><tr><th>Wk</th><th>Runs (km)</th><th>Total</th></tr>
       ${p.weeks.map((w, i) => `<tr class="${p.active && i + 1 === wk ? "cur-week" : ""}"><td>${i + 1}</td>
         <td>${w.map((s) => `${WEEKDAYS[s.day]} ${esc(s.type)} <span class="mono">${fmt(s.km)}</span>`).join(" · ")}</td><td class="mono">${fmt(w.reduce((a, s) => a + s.km, 0))}</td></tr>`).join("")}</table>
@@ -874,7 +906,7 @@ function renderRunBuilder() {
   const rb = ui.rb;
   const regen = "generateRunWeeks();render()";
   const f = (label, key, mode = "decimal") => `<label class="f">${label}<input inputmode="${mode}" value="${esc(rb[key])}" onchange="ui.rb.${key}=this.value;${regen}"></label>`;
-  setTop("New running plan", "Set weekly runs, preview, then start", `<button class="icon" onclick="ui.rb=null;render()">✕</button>`);
+  setTop("New running plan", "Set weekly runs, preview, then start", `<button class="icon" onclick="ui.rb=null;render()">${ic("x")}</button>`);
   $("main").innerHTML = `
     <div class="card col">
       <label class="f">Plan name<input value="${esc(rb.name)}" placeholder="e.g. Half marathon" onchange="ui.rb.name=this.value"></label>
@@ -887,8 +919,8 @@ function renderRunBuilder() {
         <select style="width:auto" onchange="ui.rb.slots[${k}].type=this.value;${regen}">${RUN_TYPES.map((t) => `<option ${t === s.type ? "selected" : ""}>${t}</option>`).join("")}</select>
         <input class="sets-in" inputmode="decimal" value="${esc(s.km0)}" onchange="ui.rb.slots[${k}].km0=this.value;${regen}"><span class="muted">→</span>
         <input class="sets-in" inputmode="decimal" value="${esc(s.km1)}" onchange="ui.rb.slots[${k}].km1=this.value;${regen}">
-        <button class="icon" onclick="ui.rb.slots.splice(${k},1);${regen}">✕</button></div>`).join("")}
-      <button class="btn-t" style="align-self:flex-start" onclick="ui.rb.slots.push({day:3,type:'Easy',km0:'5',km1:'5'});${regen}">+ Run per week</button>
+        <button class="icon" onclick="ui.rb.slots.splice(${k},1);${regen}">${ic("x")}</button></div>`).join("")}
+      <button class="btn-t" style="align-self:flex-start" onclick="ui.rb.slots.push({day:3,type:'Easy',km0:'5',km1:'5'});${regen}">${ic("plus")} Run per week</button>
     </div>
     <div class="card" style="padding:8px"><div class="title" style="padding:6px">Preview · tap a distance to change it</div>
       <table class="hist fit"><tr><th>Wk</th>${(rb.weeks[0] ?? []).map((s) => `<th>${WEEKDAYS[s.day]}</th>`).join("")}<th>km</th></tr>
@@ -923,7 +955,7 @@ function statsBodyweight() {
     </div>
     <div class="card" style="padding:8px"><table class="hist"><tr><th>Date</th><th>Bodyweight</th><th></th></tr>
       ${bws.slice().reverse().map((b) => `<tr><td class="mono">${dmy(b.date)}</td><td class="mono">${fmt(b.kg)} kg</td>
-        <td style="text-align:right"><button class="icon" onclick="deleteBodyweight(${b.id})">✕</button></td></tr>`).join("")}
+        <td style="text-align:right"><button class="icon" onclick="deleteBodyweight(${b.id})">${ic("x")}</button></td></tr>`).join("")}
     </table>${bws.length ? "" : `<div class="empty">Enter bodyweight at the top of a workout day</div>`}</div>`;
 }
 function deleteBodyweight(id) { db.bodyweights = db.bodyweights.filter((b) => b.id !== id); save(); render(); }
@@ -954,7 +986,7 @@ function statsOther() {
       ${open ? `<div class="row"><input id="rv-${r.id}" placeholder="${r.unit === "time" ? "h:mm:ss" : UNITS[r.unit]}" inputmode="${r.unit === "time" ? "text" : "decimal"}">
           <input id="rd-${r.id}" type="date" value="${today()}" style="width:auto"><button class="btn sm" onclick="addRecordEntry(${r.id})">Add</button></div>
         ${r.entries.slice().sort((a, b) => ((b.date || "") > (a.date || "") ? 1 : -1)).map((e) => `<div class="row"><span class="mono grow">${e.date ? dmy(e.date) : "–"}</span>
-          <span class="mono">${recValue(r, e.value)}</span><button class="icon" onclick="deleteRecordEntry(${r.id},${e.id})">✕</button></div>`).join("")}
+          <span class="mono">${recValue(r, e.value)}</span><button class="icon" onclick="deleteRecordEntry(${r.id},${e.id})">${ic("x")}</button></div>`).join("")}
         <button class="btn-t red" style="align-self:flex-end" onclick="deleteRecord(${r.id})">Delete this stat</button>` : ""}
     </div>`;
   }).join("")}
@@ -995,7 +1027,7 @@ function addRecordEntry(id) {
   const value = r.unit === "time" ? parseDur(raw) : num(raw);
   if (!(value > 0)) return alert(r.unit === "time" ? "Enter a time like 1:45:30." : "Enter a number.");
   r.entries.push({ id: nextId(), date: $(`rd-${id}`).value || today(), value });
-  save(); toast(recBest(r).value === value ? "New best! 🎉" : "Result saved");
+  save(); toast(recBest(r).value === value ? "New best!" : "Result saved");
 }
 function deleteRecordEntry(id, entryId) {
   const r = db.records.find((x) => x.id === id);
@@ -1043,7 +1075,7 @@ function statsRecords() {
       ${recs.length ? `<table class="hist"><tr><th>Lift</th><th>Set</th><th>Date</th><th></th></tr>
         ${recs.map((r) => `<tr><td><b>${esc(r.lift)}</b>${r.variant ? `<div class="muted">${esc(r.variant)}</div>` : ""}</td>
           <td class="mono lime">${r.reps}x${fmt(r.w)}</td><td class="mono muted">${r.date ? dmy(r.date) : ""}</td>
-          <td style="text-align:right"><button class="icon" onclick="deleteLiftRecord(${r.id})">✕</button></td></tr>`).join("")}</table>`
+          <td style="text-align:right"><button class="icon" onclick="deleteLiftRecord(${r.id})">${ic("x")}</button></td></tr>`).join("")}</table>`
         : `<div class="muted">e.g. Bench Press · paused, Pull-ups · not clean, or any other lift.</div>`}
       <select id="lr-lift">${db.exercises.map((e) => `<option>${esc(e.name)}</option>`).join("")}</select>
       <label class="f">Variation / note<input id="lr-variant" placeholder="e.g. paused, touch-and-go, clean"></label>
@@ -1077,7 +1109,7 @@ function revertPr() {
 const progToggle = () => `<div class="seg">${[["programs", "Splits"], ["exercises", "Exercises"]].map(([k, l]) =>
   `<button class="${ui.progTab === k ? "sel" : ""}" onclick="ui.progTab='${k}';render()">${l}</button>`).join("")}</div>`;
 function renderPrograms() {
-  setTop("Splits", `${db.programs.length} splits`, `<button class="btn sm" onclick="openProgramBuilder()">＋ New</button>${SETTINGS_BTN}`);
+  setTop("Splits", `${db.programs.length} splits`, `<button class="btn sm" onclick="openProgramBuilder()">${ic("plus")} New</button>${SETTINGS_BTN}`);
   const ordered = [currentProgram(), ...db.programs.filter((p) => p.id !== db.currentProgramId)];
   $("main").innerHTML = progToggle() + ordered.map((p) => {
     const open = ui.progOpen[p.id] ?? p.id === db.currentProgramId;
@@ -1085,7 +1117,7 @@ function renderPrograms() {
     return `<div class="card ${isCur ? "cur-prog" : ""}">
       <div class="row" style="cursor:pointer" onclick="ui.progOpen[${p.id}]=${!open};render()">
         <div class="grow"><b>${esc(p.name)}</b> ${isCur ? '<span class="badge">CURRENT</span>' : ""}
-          <div class="muted">${p.days.length}-day split</div></div><span>${open ? "▴" : "▾"}</span></div>
+          <div class="muted">${p.days.length}-day split</div></div><span>${chev(open)}</span></div>
       ${open ? `<div class="days">${p.days.map((d) => `<div class="pday"><b>${esc(d.name)}</b>
           ${d.items.map((it) => `<div><span class="mono muted">${esc(setsLabel(it.sets))}</span> ${esc(it.label)}</div>`).join("")}</div>`).join("")}</div>
         <div class="row">${isCur ? "" : `<button class="btn" onclick="makeCurrent(${p.id})">Make current</button>`}
@@ -1115,22 +1147,38 @@ function exerciseOptions(selected) {
 }
 function renderProgramBuilder() {
   const pb = ui.pb;
-  setTop(pb.id ? "Edit split" : "New split", `${pb.days.length} days`, `<button class="icon" onclick="ui.pb=null;render()">✕</button>`);
+  setTop(pb.id ? "Edit split" : "New split", `${pb.days.length} days`, `<button class="icon" onclick="ui.pb=null;render()">${ic("x")}</button>`);
   $("main").innerHTML = `
     <label class="f">Split name<input value="${esc(pb.name)}" onchange="ui.pb.name=this.value"></label>
     ${pb.days.map((d, di) => `<div class="card col">
       <div class="row"><input value="${esc(d.name)}" onchange="ui.pb.days[${di}].name=this.value" style="font-weight:700">
-        ${pb.days.length > 1 ? `<button class="icon" onclick="ui.pb.days.splice(${di},1);render()">🗑</button>` : ""}</div>
+        ${pb.days.length > 1 ? `<button class="icon" onclick="ui.pb.days.splice(${di},1);render()">${ic("trash")}</button>` : ""}</div>
       ${d.items.map((it, k) => `<div class="row">
         <input class="sets-in" inputmode="numeric" value="${esc(String(it.sets).replace(/x$/i, ""))}" onchange="ui.pb.days[${di}].items[${k}].sets=this.value" title="Sets">
         <span class="muted">×</span>
-        <select onchange="ui.pb.days[${di}].items[${k}].label=this.value">${exerciseOptions(it.label)}</select>
-        <button class="icon" onclick="ui.pb.days[${di}].items.splice(${k},1);render()">✕</button></div>`).join("")}
-      <button class="btn-t" onclick="ui.pb.days[${di}].items.push({sets:'3',label:'Leg isolation'});render()">+ Exercise</button>
+        <select onchange="setPbLabel(${di},${k},this.value)">${exerciseOptions(it.label)}</select>
+        <button class="icon" onclick="ui.pb.days[${di}].items.splice(${k},1);render()">${ic("x")}</button></div>${SLOTS[it.label] ? poolPicker(it, di, k) : ""}`).join("")}
+      <button class="btn-t" onclick="ui.pb.days[${di}].items.push({sets:'3',label:'Leg isolation'});render()">${ic("plus")} Exercise</button>
     </div>`).join("")}
-    <button class="btn-o" style="text-align:center" onclick="ui.pb.days.push({name:'Day ${pb.days.length + 1}',items:[]});render()">+ Add day</button>
+    <button class="btn-o" style="text-align:center" onclick="ui.pb.days.push({name:'Day ${pb.days.length + 1}',items:[]});render()">${ic("plus")} Add day</button>
     <label class="chk-item"><input type="checkbox" ${pb.makeCurrent ? "checked" : ""} onchange="ui.pb.makeCurrent=this.checked"> Set as current split</label>
     <button class="btn" onclick="saveProgram()">Save split</button>`;
+}
+function setPbLabel(di, k, label) { const it = ui.pb.days[di].items[k]; it.label = label; delete it.pool; render(); }
+/** Under a placeholder: which of its exercises are offered on the day (none picked = all). */
+function poolPicker(it, di, k) {
+  const all = slotExercises(it.label), on = (n) => !it.pool?.length || it.pool.includes(n);
+  const n = all.filter(on).length, key = `${di}-${k}`, open = ui.pbPool === key;
+  return `<button class="btn-t sm pool-btn" onclick="ui.pbPool=${open ? "null" : q(key)};render()">Exercises offered · ${n === all.length ? "all" : `${n} of ${all.length}`} ${chev(open)}</button>
+    ${open ? `<div class="pool">${all.map((e) => `<button class="fchip ${on(e) ? "sel" : ""}" onclick="togglePool(${di},${k},${q(e)})">${esc(e)}</button>`).join("")}</div>` : ""}`;
+}
+function togglePool(di, k, name) {
+  const it = ui.pb.days[di].items[k], all = slotExercises(it.label);
+  const pool = it.pool?.length ? it.pool.filter((n) => all.includes(n)) : all.slice();
+  const next = pool.includes(name) ? pool.filter((n) => n !== name) : [...pool, name];
+  if (!next.length) return; // keep at least one
+  if (next.length === all.length) delete it.pool; else it.pool = next;
+  render();
 }
 function saveProgram() {
   const pb = ui.pb;
@@ -1148,18 +1196,18 @@ function saveProgram() {
 function renderBlocks() {
   const tab = ui.blockTab ?? "strength";
   const pastToggle = (key, label, n) => `<button class="row btn-t" style="width:100%;color:var(--t2)" onclick="ui.${key}=!ui.${key};render()">
-    <span class="title grow" style="text-align:left">${label} · ${n}</span><span>${ui[key] ? "▴" : "▾"}</span></button>`;
+    <span class="title grow" style="text-align:left">${label} · ${n}</span><span>${chev(ui[key])}</span></button>`;
   if (tab === "running") {
     const act = activeRunPlan(), past = db.runPlans.filter((p) => !p.active).sort((a, b) => (a.start < b.start ? 1 : -1));
-    setTop("Blocks", "Running plans", `<button class="btn sm" onclick="openRunBuilder()">＋ New plan</button>${SETTINGS_BTN}`);
+    setTop("Blocks", "Running plans", `<button class="btn sm" onclick="openRunBuilder()">${ic("plus")} New plan</button>${SETTINGS_BTN}`);
     $("main").innerHTML = `${segTabs([["strength", "Strength"], ["running", "Running"]], tab, "blockTab")}
-      ${act ? runPlanCard(act) : `<div class="card muted">No active running plan. Start one with ＋ New plan, or reuse a previous plan below.</div>`}
+      ${act ? runPlanCard(act) : `<div class="card muted">No active running plan. Start one with New plan, or reuse a previous plan below.</div>`}
       ${past.length ? pastToggle("pastRunOpen", "Previous plans", past.length) + (ui.pastRunOpen ? past.map(runPlanCard).join("") : "") : ""}`;
     return;
   }
   const act = activeBlock();
   const past = db.blocks.filter((b) => !b.active).slice().reverse();
-  setTop("Blocks", "Periodization for main lifts", `<button class="btn sm" onclick="openBlockBuilder()">＋ New block</button>${SETTINGS_BTN}`);
+  setTop("Blocks", "Periodization for main lifts", `<button class="btn sm" onclick="openBlockBuilder()">${ic("plus")} New block</button>${SETTINGS_BTN}`);
   $("main").innerHTML = `${segTabs([["strength", "Strength"], ["running", "Running"]], tab, "blockTab")}
     ${act ? blockCard(act) : `<div class="card muted">No active block. Workouts are pre-filled from your last session.</div>`}
     ${past.length ? pastToggle("pastBlocksOpen", "Previous blocks", past.length) + (ui.pastBlocksOpen ? past.map(blockCard).join("") : "") : ""}
@@ -1174,21 +1222,20 @@ function blockCard(b) {
     <div class="row" style="cursor:pointer" onclick="ui.blockOpen[${b.id}]=${!open};render()">
       <div class="grow"><b>${esc(b.name)}</b> ${b.active ? '<span class="badge">ACTIVE</span>' : ""}
         <div class="muted">${dmy(b.start)} – ${dmy(end)} · ${b.weeks} weeks${b.active && wk >= 1 && wk <= b.weeks ? ` · now week ${wk}` : ""}</div>
-        <div class="muted">${b.lifts.map((l) => esc(l.lift)).join(" · ")}</div></div><span>${open ? "▴" : "▾"}</span></div>
+        <div class="muted">${b.lifts.map((l) => esc(l.lift)).join(" · ")}</div></div><span>${chev(open)}</span></div>
     ${open ? `${b.lifts.map((l, li) => planTable(l, l.plan, b.active ? wk : 0, null, `setTestTarget(${b.id},${li},this.value)`)).join("")}
       <div class="row wrap">${hasTest(b)
         ? `<button class="btn-t" onclick="removeTestWeek(${b.id})">Remove test week</button>`
-        : `<button class="btn-t" onclick="addTestWeek(${b.id})">+ Add test week</button>`}
+        : `<button class="btn-t" onclick="addTestWeek(${b.id})">${ic("plus")} Add test week</button>`}
         <span class="grow"></span><button class="btn-t" onclick="openBlockBuilder(${b.id})">Copy as new</button>
         <button class="btn-t red" onclick="deleteBlock(${b.id})">Delete</button></div>` : ""}
   </div>`;
 }
 
-// ----- Test week: three singles at 90% · 95% · 100% of a target max -----
-function testWeek(lift, target) {
-  const bw = exByName(lift)?.bw ? BW_FACTOR * bwAt() : 0;
+// ----- Test week: three singles at 80% · 90% · 100% of a target max -----
+function testWeek(lift, target, bw = exByName(lift)?.bw ? BW_FACTOR * bwAt() : 0) {
   const at = (p) => r25((target + bw) * p - bw);
-  return { test: true, sets: [{ n: 1, reps: 1, w: at(0.9) }, { n: 1, reps: 1, w: at(0.95) }, { n: 1, reps: 1, w: target }] };
+  return { test: true, sets: [{ n: 1, reps: 1, w: at(0.8) }, { n: 1, reps: 1, w: at(0.9) }, { n: 1, reps: 1, w: target }] };
 }
 /** Default test target: the higher of the block's 1RM and the heaviest single ever logged. */
 const defaultTestTarget = (cfg) =>
@@ -1275,7 +1322,7 @@ function openBlockBuilder(copyId) {
 function renderBlockBuilder() {
   const be = ui.be, n = parseInt(be.weeks) || 0;
   const unused = mainLifts().filter((l) => !be.lifts.some((c) => c.lift === l));
-  setTop("New block", "Add lifts, preview, then save & activate", `<button class="icon" onclick="ui.be=null;render()">✕</button>`);
+  setTop("New block", "Add lifts, preview, then save & activate", `<button class="icon" onclick="ui.be=null;render()">${ic("x")}</button>`);
   $("main").innerHTML = `
     <div class="card col">
       <label class="f">Block name<input value="${esc(be.name)}" placeholder="e.g. Winter strength" onchange="ui.be.name=this.value"></label>
@@ -1287,7 +1334,7 @@ function renderBlockBuilder() {
     <div class="card col"><div class="title">Default scheme · all lifts</div>${schemeFields(be.def, "ui.be.def")}</div>
     ${be.lifts.map((c, i) => liftEditor(c, i, n)).join("")}
     ${unused.length ? `<select onchange="if(this.value){ui.be.lifts.push({...defaultCfg(this.value),own:false});render()}">
-      <option value="">＋ Add main lift…</option>${unused.map((l) => `<option>${esc(l)}</option>`).join("")}</select>` : ""}
+      <option value="">Add main lift…</option>${unused.map((l) => `<option>${esc(l)}</option>`).join("")}</select>` : ""}
     <button class="btn" onclick="saveBlock()">Save & set active</button>`;
 }
 const field = (path, c) => (label, key, mode = "decimal") =>
@@ -1312,7 +1359,7 @@ function schemeFields(c, path) {
 function liftEditor(c, i, n) {
   const path = `ui.be.lifts[${i}]`, eff = effCfg(c), f = field(path, c), tb = eff.model !== "drop";
   return `<div class="card col">
-    <div class="row"><b class="grow" style="font-size:18px">${esc(c.lift)}</b><button class="icon" onclick="ui.be.lifts.splice(${i},1);render()">🗑</button></div>
+    <div class="row"><b class="grow" style="font-size:18px">${esc(c.lift)}</b><button class="icon" onclick="ui.be.lifts.splice(${i},1);render()">${ic("trash")}</button></div>
     <label class="chk-item"><input type="checkbox" ${c.own ? "checked" : ""} onchange="toggleOwnScheme(${i}, this.checked)"> Different from default scheme</label>
     ${c.own ? schemeFields(c, path) : `<div class="muted">${modelLabel(eff)} · ${eff.model === "drop" ? `${eff.topR0}→${eff.topR1} reps` : `top ${eff.topR0}→${eff.topR1}, back-off ${eff.boR0}→${eff.boR1}`}</div>`}
     <div class="row">${f("1RM kg", "oneRm")}${eff.method === "kg" ? f(tb ? "Top start kg" : "Start kg", "kgT0") + (tb ? f("Back-off start kg", "kgB0") : "") : ""}</div>
@@ -1365,7 +1412,7 @@ function renderExercises() {
   const list = db.exercises.filter((e) => (ui.exPattern === "All" || (ui.exPattern === "Main lifts" ? e.main : e.pattern === ui.exPattern)) &&
     (!qText || [e.name, e.muscle, e.pattern].some((s) => s.toLowerCase().includes(qText))));
   const groups = PATTERNS.filter((p) => list.some((e) => e.pattern === p));
-  setTop("Exercises", `${db.exercises.length} exercises`, `<button class="btn sm" onclick="openExercise()">＋ Add</button>${SETTINGS_BTN}`);
+  setTop("Exercises", `${db.exercises.length} exercises`, `<button class="btn sm" onclick="openExercise()">${ic("plus")} Add</button>${SETTINGS_BTN}`);
   $("main").innerHTML = `${progToggle()}
     <input id="ex-search" placeholder="Search name, muscle, pattern…" value="${esc(ui.exq)}" oninput="ui.exq=this.value;searchExercises()">
     <div class="hscroll">${["All", "Main lifts", ...PATTERNS].map((p) => `<button class="fchip ${ui.exPattern === p ? "sel" : ""}" onclick="ui.exPattern=${q(p)};render()">${p}</button>`).join("")}</div>
@@ -1381,9 +1428,10 @@ function searchExercises() {
   render();
   const el = $("ex-search"); el.focus(); el.setSelectionRange(pos, pos);
 }
-function openExercise(id) {
+/** after: "pick" adds the new exercise to the open exercise choice, "add" adds it to today's workout. */
+function openExercise(id, after) {
   const e = id ? db.exercises.find((x) => x.id === id) : { name: "", muscle: "Chest", pattern: "Horizontal Push", mechanic: "Compound", measure: "reps", load: "kg", bw: false, main: false, custom: true };
-  ui.modal = { type: "exercise", e: { ...e } };
+  ui.modal = { type: "exercise", e: { ...e }, after };
   renderModal();
 }
 function saveExercise() {
@@ -1396,7 +1444,11 @@ function saveExercise() {
   if (db.exercises.some((x) => x.name.toLowerCase() === e.name.toLowerCase() && x.id !== e.id)) return alert("An exercise with that name already exists.");
   if (e.id) Object.assign(db.exercises.find((x) => x.id === e.id), e);
   else db.exercises.push({ ...e, id: nextId(), custom: true });
-  save(); ui.modal = null; toast(`${e.name} saved`);
+  const after = ui.modal.after;
+  save(); ui.modal = null;
+  if (after === "add") return addExercise(e.name);
+  if (after === "pick" && ui.pick && !ui.pick.sel.includes(e.name)) ui.pick.sel.push(e.name);
+  toast(`${e.name} saved`);
 }
 function deleteExercise() {
   const e = ui.modal.e;
@@ -1439,18 +1491,19 @@ function onImportText(text) {
 }
 
 // ================= Settings =================
-/** Accent colour drives every highlight (buttons, ticks, badges); --pc is its 13% tint. */
+/** Accent colour drives every highlight (buttons, ticks, badges); --pc is its 13% tint, --pb its 45% border. */
 function applyAccent() {
   const hex = /^#[0-9a-f]{6}$/i.test(db.settings.accent ?? "") ? db.settings.accent : ACCENTS[0][0];
   const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
   document.documentElement.style.setProperty("--lime", hex);
   document.documentElement.style.setProperty("--pc", `rgba(${r}, ${g}, ${b}, 0.13)`);
+  document.documentElement.style.setProperty("--pb", `rgba(${r}, ${g}, ${b}, 0.45)`);
 }
 function setAccent(hex) { db.settings.accent = hex; applyAccent(); save(); render(); }
 function openSettings() { ui.settings = true; ui.modal = null; $("main").scrollTop = 0; render(); }
 function renderSettings() {
   const s = db.settings, kb = Math.round(JSON.stringify(db).length / 1024), accent = s.accent ?? ACCENTS[0][0];
-  setTop("Settings", "GymLog", `<button class="icon" title="Close" onclick="ui.settings=false;render()">✕</button>`);
+  setTop("Settings", "GymLog", `<button class="icon" title="Close" onclick="ui.settings=false;render()">${ic("x")}</button>`);
   $("main").innerHTML = `
     <div class="card col"><div class="title">Appearance · accent colour</div>
       <div class="row wrap" style="gap:10px">${ACCENTS.map(([hex, name]) => `<button class="accent-dot ${hex === accent ? "sel" : ""}" style="background:${hex}" title="${name}" aria-label="${name}" onclick="setAccent('${hex}')"></button>`).join("")}
@@ -1466,9 +1519,9 @@ function renderSettings() {
     <div class="card col"><div class="title">Resistance bands · lightest first</div>
       ${db.bands.map((b, k) => `<div class="row"><input type="color" value="${esc(b.color)}" onchange="setBand(${k},'color',this.value)" class="swatch">
         <input value="${esc(b.name)}" onchange="setBand(${k},'name',this.value)">
-        <button class="icon" ${k ? "" : "disabled"} title="Move up" onclick="moveBand(${k})">↑</button>
-        <button class="icon" title="Delete" onclick="deleteBand(${k})">✕</button></div>`).join("")}
-      <button class="btn-t" style="align-self:flex-start" onclick="addBand()">+ Band</button></div>
+        <button class="icon" ${k ? "" : "disabled"} title="Move up" onclick="moveBand(${k})">${ic("arrowUp")}</button>
+        <button class="icon" title="Delete" onclick="deleteBand(${k})">${ic("x")}</button></div>`).join("")}
+      <button class="btn-t" style="align-self:flex-start" onclick="addBand()">${ic("plus")} Band</button></div>
     <div class="muted" style="text-align:center">GymLog · data version ${db.schema}</div>`;
 }
 function setSetting(key, value) {
@@ -1523,7 +1576,7 @@ function renderCalc(m, scrim) {
       <div class="row">${inp("kg", "w")}${inp("Reps", "reps", "numeric")}${inp("RPE", "rpe")}</div>`
     : `<div class="row">${inp("Working weight kg", "work")}${inp("Work reps", "workReps", "numeric")}</div>`;
   $("modal").innerHTML = `${scrim}<div class="dialog">
-    <div class="row"><h2 class="grow">Calculator</h2><button class="icon" onclick="ui.modal=null;render()">✕</button></div>
+    <div class="row"><h2 class="grow">Calculator</h2><button class="icon" onclick="ui.modal=null;render()">${ic("x")}</button></div>
     ${tabs}${body}<div id="calc-out" class="col"></div></div>`;
   calcRefresh();
 }
@@ -1549,18 +1602,17 @@ function calcRefresh() {
     for (const p of db.settings.plates) while (side >= p - 1e-9) { list.push(p); side -= p; }
     return list.length ? list.map(fmt).join(" + ") + (side > 0.01 ? ` (+${fmt(Math.round(side * 100) / 100)})` : "") : "bar";
   };
-  const sets = [...warmupSets(work, workReps, bar), { w: work, reps: workReps, work: true }];
+  const sets = [...warmupSets(work, bar), { w: work, reps: workReps, work: true }];
   out.innerHTML = `<table class="hist fit"><tr><th></th><th>Set</th><th>Plates per side</th></tr>
     ${sets.map((s, k) => `<tr class="${s.work ? "cur-week" : ""}"><td class="muted">${s.work ? "Work" : k + 1}</td>
       <td class="mono">${s.reps}x${fmt(s.w)}</td><td class="mono muted">${plates(s.w)}</td></tr>`).join("")}</table>
-    <div class="muted">Empty bar, then about 40 / 55 / 70 / 80 % (and 90 % for sets of 3 or fewer). Bar ${fmt(bar)} kg — change it in Settings.</div>`;
+    <div class="muted">Last two warm-up singles at 80 % and 90 % of the working weight. Bar ${fmt(bar)} kg — change it in Settings.</div>`;
 }
-/** Warm-up ramp to a working weight: bar ×10, then ~40/55/70/80(/90)% with fewer reps as it gets heavier. */
-function warmupSets(work, workReps, bar) {
+/** The last warm-ups before a working weight: singles at 80% and 90% (lighter ramp sets are left to feel). */
+function warmupSets(work, bar) {
   const sets = [];
-  [[0, 10], [0.4, 5], [0.55, 3], [0.7, 2], [0.8, 1], [0.9, 1]].forEach(([p, reps]) => {
-    if (p === 0.9 && workReps > 3) return;
-    const w = p ? Rpe.round(work * p, STEP) : bar;
+  [[0.8, 1], [0.9, 1]].forEach(([p, reps]) => {
+    const w = Rpe.round(work * p, STEP);
     if (w < bar || w >= work || sets.some((s) => s.w >= w)) return;
     sets.push({ w, reps });
   });
@@ -1577,8 +1629,8 @@ function renderModal() {
       <h2>${esc(m.lift)}</h2>
       <label class="f">Date<input type="date" value="${m.date}" onchange="ui.modal.date=this.value"></label>
       ${setsTable(m.lift, m.rows, (j, f) => `ui.modal.rows[${j}].${f}=this.value`, (j) => `ui.modal.rows[${j}].band=nextBand(ui.modal.rows[${j}].band);renderModal()`,
-        (r, j) => `<button class="icon" onclick="ui.modal.rows.splice(${j},1);renderModal()">✕</button>`)}
-      <button class="btn-t" style="align-self:flex-start" onclick="ui.modal.rows.push({...(ui.modal.rows.at(-1) ?? {reps:'',t:'',w:'',band:''})});renderModal()">+ Set</button>
+        (r, j) => `<button class="icon" onclick="ui.modal.rows.splice(${j},1);renderModal()">${ic("x")}</button>`)}
+      <button class="btn-t" style="align-self:flex-start" onclick="ui.modal.rows.push({...(ui.modal.rows.at(-1) ?? {reps:'',t:'',w:'',band:''})});renderModal()">${ic("plus")} Set</button>
       <div class="row">${m.orig ? `<button class="btn-t red" onclick="deleteSession()">Delete</button>` : ""}<span class="grow"></span>
         <button class="btn-t" onclick="ui.modal=null;render()">Cancel</button><button class="btn" onclick="saveSession()">Save</button></div></div>`;
     return;
@@ -1587,8 +1639,9 @@ function renderModal() {
   if (m.type === "calc") return renderCalc(m, scrim);
   if (m.type === "addEx") {
     $("modal").innerHTML = `${scrim}<div class="dialog">
-      <div class="row"><h2 class="grow">Add exercise</h2><button class="icon" onclick="ui.modal=null;render()">✕</button></div>
+      <div class="row"><h2 class="grow">Add exercise</h2><button class="icon" onclick="ui.modal=null;render()">${ic("x")}</button></div>
       <input id="addex-q" placeholder="Search name, muscle, pattern…" value="${esc(m.q)}" oninput="ui.modal.q=this.value;addExerciseList()">
+      <button class="btn-t" style="align-self:flex-start" onclick="openExercise(null,'add')">${ic("plus")} New exercise</button>
       <div id="addex-list" class="col" style="gap:6px"></div></div>`;
     addExerciseList();
     return;
