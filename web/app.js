@@ -128,8 +128,8 @@ function resolveItem(label, pool) {
   const ex = exByName(label);
   if (ex) return { exercise: ex.name };
   if (SLOTS[label]) {
-    const all = slotExercises(label), picked = all.filter((n) => pool?.includes(n));
-    return { options: picked.length ? picked : all };
+    const picked = (pool ?? []).map((n) => exByName(n)?.name).filter(Boolean);
+    return { options: picked.length ? picked : slotExercises(label) };
   }
   if (label.includes(" / ")) {
     const opts = label.split(" / ").map((s) => exByName(s.trim())?.name).filter(Boolean);
@@ -499,18 +499,14 @@ function renderDay() {
 function swapCard(item, i) {
   if (ui.pick?.i !== i) ui.pick = { i, sel: item.exercise ? [item.exercise] : [] };
   const sel = ui.pick.sel;
-  // "Suggested" = the slot's options / same pattern; the other filters reach any exercise in the library.
-  const f = ui.pick.filter ?? "";
-  const base = f ? db.exercises.filter((e) => f === "All" || EX_GROUPS.find(([g]) => g === f)[1].includes(e.pattern)).map((e) => e.name) : alternativesFor(item);
-  const filters = [["", "Suggested"], ["All", "All"], ...EX_GROUPS.filter(([, ps]) => db.exercises.some((e) => ps.includes(e.pattern))).map(([g]) => [g, g])];
+  // The slot's default exercises, plus anything picked from the full library with "Choose any".
+  const base = alternativesFor(item);
   return `<div class="card up"><div class="muted">CHOOSE EXERCISES · ${esc(item.label)}</div>
     <div class="muted">Tap one or more — each gets its own sets.</div>
-    <div class="hscroll">${filters.map(([k, l]) => `<button class="fchip ${f === k ? "sel" : ""}" onclick="ui.pick.filter=${q(k)};render()">${esc(l)}</button>`).join("")}</div>
     <div class="opt-list">${[...sel.filter((o) => !base.includes(o)), ...base].map((o) => {
       const k = sel.indexOf(o);
       return `<button class="fchip ${k >= 0 ? "sel" : ""}" onclick="togglePick(${q(o)})">${k >= 0 ? `<b>${k + 1}</b> ` : ""}${esc(o)}</button>`;
-    }).join("")}</div>
-    <button class="btn-t" style="align-self:flex-start" onclick="openExercise(null,'pick')">${ic("plus")} New exercise</button>
+    }).join("")}<button class="fchip" onclick="openPicker({ mode: 'pick' })">${ic("plus")} Choose any…</button></div>
     <div class="row"><span class="grow"></span>
       ${item.exercise ? `<button class="btn-t" onclick="ui.swap=null;ui.pick=null;render()">Cancel</button>` : ""}
       <button class="btn" ${sel.length ? "" : "disabled"} onclick="applyPick(${i})">Use ${sel.length > 1 ? `${sel.length} exercises` : "exercise"}</button></div></div>`;
@@ -581,13 +577,29 @@ function removeItem(i) {
   ui.swap = null; ui.pick = null;
   save(); render();
 }
-function openAddExercise() { ui.modal = { type: "addEx", q: "" }; renderModal(); }
+/**
+ * Pick any exercise from the library, or create one when it is missing.
+ * mode: "add" (new item in today's workout), "pick" (into the open exercise choice), "pool" (a split placeholder's defaults, with di/k).
+ */
+function openPicker(target) { ui.modal = { type: "addEx", q: "", target }; renderModal(); }
+function openAddExercise() { openPicker({ mode: "add" }); }
 function addExerciseList() {
-  const qText = ui.modal.q.trim().toLowerCase();
+  const raw = ui.modal.q.trim(), qText = raw.toLowerCase();
   const list = db.exercises.filter((e) => !qText || [e.name, e.muscle, e.pattern].some((s) => s.toLowerCase().includes(qText)));
-  $("addex-list").innerHTML = list.map((e) => `<button class="item" onclick="addExercise(${q(e.name)})">
+  const create = `<button class="btn-o" style="text-align:center" onclick="openExercise(null, ui.modal.target, ${q(raw)})">${ic("plus")} Create ${raw && !exByName(raw) ? `“${esc(raw)}”` : "new exercise"}</button>`;
+  $("addex-list").innerHTML = (raw && !exByName(raw) ? create : "") + list.map((e) => `<button class="item" onclick="pickExercise(${q(e.name)})">
     <div class="grow"><div>${esc(e.name)}</div><div class="muted" style="font-size:12px">${esc(e.muscle)} · ${esc(e.pattern)}</div></div><span class="lime">${ic("plus")}</span></button>`).join("")
-    || `<div class="empty">No match — add it in Splits → Exercises</div>`;
+    + (raw && !exByName(raw) ? "" : create);
+}
+function pickExercise(name, target = ui.modal.target) {
+  ui.modal = null;
+  if (target.mode === "add") return addExercise(name);
+  if (target.mode === "pick" && ui.pick && !ui.pick.sel.includes(name)) ui.pick.sel.push(name);
+  if (target.mode === "pool") {
+    const it = ui.pb.days[target.di].items[target.k];
+    it.pool = [...new Set([...poolOf(it), name])];
+  }
+  render();
 }
 function addExercise(name) {
   const w = db.workout;
@@ -1165,19 +1177,22 @@ function renderProgramBuilder() {
     <button class="btn" onclick="saveProgram()">Save split</button>`;
 }
 function setPbLabel(di, k, label) { const it = ui.pb.days[di].items[k]; it.label = label; delete it.pool; render(); }
-/** Under a placeholder: which of its exercises are offered on the day (none picked = all). */
+/** A placeholder's default exercises: its own pick (any exercise) or, when none, every exercise matching the slot. */
+const poolOf = (it) => resolveItem(it.label, it.pool).options;
+/** Under a placeholder: which exercises show up as buttons on the day; "Choose any" adds others from the library. */
 function poolPicker(it, di, k) {
-  const all = slotExercises(it.label), on = (n) => !it.pool?.length || it.pool.includes(n);
-  const n = all.filter(on).length, key = `${di}-${k}`, open = ui.pbPool === key;
-  return `<button class="btn-t sm pool-btn" onclick="ui.pbPool=${open ? "null" : q(key)};render()">Exercises offered · ${n === all.length ? "all" : `${n} of ${all.length}`} ${chev(open)}</button>
-    ${open ? `<div class="pool">${all.map((e) => `<button class="fchip ${on(e) ? "sel" : ""}" onclick="togglePool(${di},${k},${q(e)})">${esc(e)}</button>`).join("")}</div>` : ""}`;
+  const pool = poolOf(it), all = [...new Set([...slotExercises(it.label), ...pool])];
+  const key = `${di}-${k}`, open = ui.pbPool === key;
+  return `<button class="btn-t sm pool-btn" onclick="ui.pbPool=${open ? "null" : q(key)};render()">Default exercises · ${it.pool?.length ? pool.length : "all"} ${chev(open)}</button>
+    ${open ? `<div class="pool">${all.map((e) => `<button class="fchip ${pool.includes(e) ? "sel" : ""}" onclick="togglePool(${di},${k},${q(e)})">${esc(e)}</button>`).join("")}
+      <button class="fchip" onclick="openPicker({ mode: 'pool', di: ${di}, k: ${k} })">${ic("plus")} Choose any…</button></div>` : ""}`;
 }
 function togglePool(di, k, name) {
-  const it = ui.pb.days[di].items[k], all = slotExercises(it.label);
-  const pool = it.pool?.length ? it.pool.filter((n) => all.includes(n)) : all.slice();
+  const it = ui.pb.days[di].items[k], pool = poolOf(it);
   const next = pool.includes(name) ? pool.filter((n) => n !== name) : [...pool, name];
   if (!next.length) return; // keep at least one
-  if (next.length === all.length) delete it.pool; else it.pool = next;
+  const all = slotExercises(it.label);
+  if (next.length === all.length && next.every((n) => all.includes(n))) delete it.pool; else it.pool = next;
   render();
 }
 function saveProgram() {
@@ -1428,9 +1443,9 @@ function searchExercises() {
   render();
   const el = $("ex-search"); el.focus(); el.setSelectionRange(pos, pos);
 }
-/** after: "pick" adds the new exercise to the open exercise choice, "add" adds it to today's workout. */
-function openExercise(id, after) {
-  const e = id ? db.exercises.find((x) => x.id === id) : { name: "", muscle: "Chest", pattern: "Horizontal Push", mechanic: "Compound", measure: "reps", load: "kg", bw: false, main: false, custom: true };
+/** after: a picker target (see openPicker) that receives the new exercise once it is saved. */
+function openExercise(id, after, name = "") {
+  const e = id ? db.exercises.find((x) => x.id === id) : { name, muscle: "Chest", pattern: "Horizontal Push", mechanic: "Compound", measure: "reps", load: "kg", bw: false, main: false, custom: true };
   ui.modal = { type: "exercise", e: { ...e }, after };
   renderModal();
 }
@@ -1446,8 +1461,7 @@ function saveExercise() {
   else db.exercises.push({ ...e, id: nextId(), custom: true });
   const after = ui.modal.after;
   save(); ui.modal = null;
-  if (after === "add") return addExercise(e.name);
-  if (after === "pick" && ui.pick && !ui.pick.sel.includes(e.name)) ui.pick.sel.push(e.name);
+  if (after) return pickExercise(e.name, after);
   toast(`${e.name} saved`);
 }
 function deleteExercise() {
@@ -1639,9 +1653,8 @@ function renderModal() {
   if (m.type === "calc") return renderCalc(m, scrim);
   if (m.type === "addEx") {
     $("modal").innerHTML = `${scrim}<div class="dialog">
-      <div class="row"><h2 class="grow">Add exercise</h2><button class="icon" onclick="ui.modal=null;render()">${ic("x")}</button></div>
+      <div class="row"><h2 class="grow">${m.target.mode === "add" ? "Add exercise" : "Choose any exercise"}</h2><button class="icon" onclick="ui.modal=null;render()">${ic("x")}</button></div>
       <input id="addex-q" placeholder="Search name, muscle, pattern…" value="${esc(m.q)}" oninput="ui.modal.q=this.value;addExerciseList()">
-      <button class="btn-t" style="align-self:flex-start" onclick="openExercise(null,'add')">${ic("plus")} New exercise</button>
       <div id="addex-list" class="col" style="gap:6px"></div></div>`;
     addExerciseList();
     return;
