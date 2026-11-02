@@ -181,3 +181,4 @@ table.hist.fit td, table.hist.fit th { padding: 5px 3px; }
 .bw-row input { width: 90px; text-align: center; font-family: Consolas, monospace; font-weight: 700; }
 .pool { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 6px 64px; }
 .pool-btn { margin-left: 64px; align-self: flex-start; }
+tr.blk-row td { color: var(--t2); font-weight: 600; padding-top: 8px; }

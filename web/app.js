@@ -116,6 +116,15 @@ const mondayOf = (iso) => { const d = new Date(iso + "T00:00"); return addDays(i
 /** Block weeks are calendar weeks (Mon–Sun) counted from the week the block starts in. */
 const blockWeek = (b, date = today()) => Math.floor(daysBetween(mondayOf(b.start), date) / 7) + 1;
 
+const nBlocks = (b) => b.blocks || 1;
+/** "block 2/4 · week 3/6" for a multi-block cycle, "week 3/6" otherwise; weeks past the blocks are the test week. */
+function cyclePos(b, wk) {
+  const per = b.blockWeeks || b.weeks, nb = nBlocks(b);
+  if (wk > nb * per) return "test week";
+  if (nb === 1) return `week ${wk}/${b.weeks}`;
+  return `block ${Math.ceil(wk / per)}/${nb} · week ${((wk - 1) % per) + 1}/${per}`;
+}
+
 /** "3-4x" → 3, "0-2x" → 2, "4" → 4. */
 function setCount(text) {
   const n = String(text).match(/\d+/g)?.map(Number) ?? [3];
@@ -247,16 +256,43 @@ function generateLift(cfg, n) {
   if (!(n > 0)) return [];
   const bw = exByName(cfg.lift)?.bw ? BW_FACTOR * (num(cfg.bw) ?? bwAt()) : 0;
   const repsT = Array.from({ length: n }, (_, i) => Math.max(1, Math.round(lerp(num(cfg.topR0), num(cfg.topR1), i, n))));
-  const over = cfg.over || {};
-  const wT = equalSteps(cfg, "T", repsT, n, bw).map((w, i) => over[`T${i}`] ?? w);
+  const wT = equalSteps(cfg, "T", repsT, n, bw);
   if (cfg.model === "drop") {
     const sets = Math.max(1, parseInt(cfg.sets) || 1);
     return repsT.map((reps, i) => ({ sets: Array.from({ length: sets }, (_, k) => ({ kind: k === 0 ? "TOP" : "Back-off", n: 1, reps, w: wT[i] })) }));
   }
   const repsB = Array.from({ length: n }, (_, i) => Math.max(1, Math.round(lerp(num(cfg.boR0), num(cfg.boR1), i, n))));
-  const wB = equalSteps(cfg, "B", repsB, n, bw).map((w, i) => over[`B${i}`] ?? w);
+  const wB = equalSteps(cfg, "B", repsB, n, bw);
   const boSets = Math.max(0, parseInt(cfg.boSets) || 0);
   return repsT.map((reps, i) => ({ sets: [{ kind: "TOP", n: 1, reps, w: wT[i] }, ...Array.from({ length: boSets }, () => ({ kind: "Back-off", n: 1, reps: repsB[i], w: wB[i] }))] }));
+}
+
+/** Week 1 of the first and last block: the cycle's start/end values, defaulting to the scheme's week 1 (flat cycle). */
+function cycleEnds(cfg, base) {
+  const top = base[0]?.sets[0];
+  const w0 = num(cfg.cW0) ?? top?.w ?? 0, r0 = num(cfg.cR0) ?? top?.reps ?? 1;
+  return { w0, w1: num(cfg.cW1) ?? w0, r0, r1: num(cfg.cR1) ?? r0 };
+}
+/**
+ * A cycle is nBlocks blocks of w weeks each. Inside a block the weeks follow the scheme (week-to-week reps and weight);
+ * across blocks, week 1 moves linearly from the cycle's start to its end weight and reps, and every other week keeps
+ * its offset from its block's week 1. Overrides (cfg.over) are keyed by the week index within the whole cycle.
+ */
+function generateCycle(cfg, w, nBlocks = 1) {
+  const base = generateLift(cfg, w);
+  if (!base.length) return [];
+  const top = base[0].sets[0], e = cycleEnds(cfg, base), over = cfg.over || {};
+  return Array.from({ length: nBlocks }).flatMap((_, k) => {
+    const dw = nBlocks > 1 ? r25(lerp(e.w0, e.w1, k, nBlocks)) - top.w : 0;
+    const dr = nBlocks > 1 ? Math.round(lerp(e.r0, e.r1, k, nBlocks)) - top.reps : 0;
+    return base.map((wk, i) => ({
+      block: k + 1, wk: i + 1,
+      sets: wk.sets.map((st, j) => {
+        const part = j === 0 || cfg.model === "drop" ? "T" : "B";
+        return { ...st, reps: Math.max(1, st.reps + dr), w: over[`${part}${k * w + i}`] ?? r25(st.w + dw) };
+      }),
+    }));
+  });
 }
 
 function defaultCfg(lift, model = "tb") {
@@ -267,6 +303,7 @@ function defaultCfg(lift, model = "tb") {
     rpeT0: "8", rpeT1: "9.5", rpeB0: "7", rpeB1: "8.5",
     pctT0: model === "drop" ? "75" : "85", pctT1: "92.5", pctB0: "72.5", pctB1: "82.5",
     kgT0: fmt(r25(e1 * (model === "drop" ? 0.75 : 0.85))), kgB0: fmt(r25(e1 * 0.72)), kgStep: "2.5",
+    cR0: "", cR1: "", cW0: "", cW1: "",
   };
 }
 
@@ -347,7 +384,7 @@ const TABS = [
   ["stats", "Stats", svg('<path d="M8 21h8M12 17v4"/><path d="M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M17 6h3v1a3 3 0 0 1-3 3M7 6H4v1a3 3 0 0 0 3 3"/>')],
   ["home", "Home", svg('<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/>')],
   ["programs", "Splits", svg('<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4M7 14h4M7 17h7"/>')],
-  ["blocks", "Blocks", svg('<path d="M4 20V15h4v-4h4V7h4V3h4"/><path d="M3 21h18"/>')],
+  ["blocks", "Cycles", svg('<path d="M4 20V15h4v-4h4V7h4V3h4"/><path d="M3 21h18"/>')],
 ];
 
 function render() {
@@ -421,7 +458,7 @@ function renderHome() {
         <div class="ex-name">${esc(program(w.programId)?.days[w.dayIdx]?.name)}</div>
         <div class="muted">${w.items.filter((i) => i.status !== "pending").length}/${w.items.length} exercises done · tap to continue</div></button>` : ""}
     <div><div class="title">Current split</div><div class="ex-name">${esc(prog.name)}</div>
-      ${b ? `<div class="muted">Active block: <b class="lime">${esc(b.name)}</b> · week ${Math.min(Math.max(blockWeek(b), 1), b.weeks)}/${b.weeks}</div>` : ""}</div>
+      ${b ? `<div class="muted">Active cycle: <b class="lime">${esc(b.name)}</b> · ${cyclePos(b, Math.min(Math.max(blockWeek(b), 1), b.weeks))}</div>` : ""}</div>
     ${order.map((i) => dayCard(prog.days[i], i, { active: i === active, next: active == null && i === todo[0], doneOn: doneOn[i], locked: !!w && i !== active, canMove: active == null && todo.includes(i) && i !== todo[0] })).join("")}
     ${todo.length ? "" : `<div class="muted" style="text-align:center">All days done this week. New week starts in standard order.</div>`}`}`;
 }
@@ -770,7 +807,7 @@ function runCard() {
   }
   if (wk > n) {
     return `<div class="card day col">${head(`<span class="badge">DONE</span>`)}
-      <div class="muted">All ${n} weeks finished. Start a new plan in Blocks → Running plans.</div>
+      <div class="muted">All ${n} weeks finished. Start a new plan in Cycles → Running plans.</div>
       <button class="btn-o start" onclick="stopRunPlan(${p.id})">Close plan</button></div>`;
   }
   const week = planWeek(p, wk), dow = todayDow();
@@ -1214,7 +1251,7 @@ function renderBlocks() {
     <span class="title grow" style="text-align:left">${label} · ${n}</span><span>${chev(ui[key])}</span></button>`;
   if (tab === "running") {
     const act = activeRunPlan(), past = db.runPlans.filter((p) => !p.active).sort((a, b) => (a.start < b.start ? 1 : -1));
-    setTop("Blocks", "Running plans", `<button class="btn sm" onclick="openRunBuilder()">${ic("plus")} New plan</button>${SETTINGS_BTN}`);
+    setTop("Cycles", "Running plans", `<button class="btn sm" onclick="openRunBuilder()">${ic("plus")} New plan</button>${SETTINGS_BTN}`);
     $("main").innerHTML = `${segTabs([["strength", "Strength"], ["running", "Running"]], tab, "blockTab")}
       ${act ? runPlanCard(act) : `<div class="card muted">No active running plan. Start one with New plan, or reuse a previous plan below.</div>`}
       ${past.length ? pastToggle("pastRunOpen", "Previous plans", past.length) + (ui.pastRunOpen ? past.map(runPlanCard).join("") : "") : ""}`;
@@ -1222,10 +1259,10 @@ function renderBlocks() {
   }
   const act = activeBlock();
   const past = db.blocks.filter((b) => !b.active).slice().reverse();
-  setTop("Blocks", "Periodization for main lifts", `<button class="btn sm" onclick="openBlockBuilder()">${ic("plus")} New block</button>${SETTINGS_BTN}`);
+  setTop("Cycles", "Periodization for main lifts", `<button class="btn sm" onclick="openBlockBuilder()">${ic("plus")} New cycle</button>${SETTINGS_BTN}`);
   $("main").innerHTML = `${segTabs([["strength", "Strength"], ["running", "Running"]], tab, "blockTab")}
-    ${act ? blockCard(act) : `<div class="card muted">No active block. Workouts are pre-filled from your last session.</div>`}
-    ${past.length ? pastToggle("pastBlocksOpen", "Previous blocks", past.length) + (ui.pastBlocksOpen ? past.map(blockCard).join("") : "") : ""}
+    ${act ? blockCard(act) : `<div class="card muted">No active cycle. Workouts are pre-filled from your last session.</div>`}
+    ${past.length ? pastToggle("pastBlocksOpen", "Previous cycles", past.length) + (ui.pastBlocksOpen ? past.map(blockCard).join("") : "") : ""}
     ${rpeCard()}`;
   rpeRefresh();
 }
@@ -1236,7 +1273,7 @@ function blockCard(b) {
   return `<div class="card ${b.active ? "cur-prog" : ""}">
     <div class="row" style="cursor:pointer" onclick="ui.blockOpen[${b.id}]=${!open};render()">
       <div class="grow"><b>${esc(b.name)}</b> ${b.active ? '<span class="badge">ACTIVE</span>' : ""}
-        <div class="muted">${dmy(b.start)} – ${dmy(end)} · ${b.weeks} weeks${b.active && wk >= 1 && wk <= b.weeks ? ` · now week ${wk}` : ""}</div>
+        <div class="muted">${dmy(b.start)} – ${dmy(end)} · ${nBlocks(b) > 1 ? `${nBlocks(b)} blocks × ${b.blockWeeks} weeks${hasTest(b) ? " + test" : ""}` : `${b.weeks} weeks`}${b.active && wk >= 1 && wk <= b.weeks ? ` · now ${cyclePos(b, wk)}` : ""}</div>
         <div class="muted">${b.lifts.map((l) => esc(l.lift)).join(" · ")}</div></div><span>${chev(open)}</span></div>
     ${open ? `${b.lifts.map((l, li) => planTable(l, l.plan, b.active ? wk : 0, null, `setTestTarget(${b.id},${li},this.value)`)).join("")}
       <div class="row wrap">${hasTest(b)
@@ -1294,17 +1331,23 @@ function planTable(cfg, plan, curWeek = 0, editIdx = null, testEdit = null) {
     <table class="hist fit"><tr><th>Wk</th>${tb ? `<th>Top</th><th>%</th><th>Back-off</th><th>%</th>` : `<th>Sets</th><th>%</th>`}</tr>
     ${plan.map((wk, i) => {
       const cls = i + 1 === curWeek ? "cur-week" : "";
+      const multi = plan.some((x) => x.block > 1);
+      const head = multi && wk.block && wk.wk === 1 ? `<tr class="blk-row"><td colspan="${tb ? 5 : 3}">Block ${wk.block}</td></tr>` : "";
+      const label = multi && wk.block ? wk.wk : i + 1;
       if (wk.test) return `<tr class="${cls} test-row">${testRow(wk)}</tr>`;
-      if (cfg.model === "custom") {
-        const heaviest = Math.max(...wk.sets.map((s) => s.w));
-        return `<tr class="${cls}"><td>${i + 1}</td><td class="mono">${groupSets(wk.sets).map(setText).join(" · ")}</td><td class="mono muted">${pct(heaviest)}</td></tr>`;
-      }
-      const top = wk.sets[0], bo = wk.sets.filter((s) => s.kind === "Back-off");
-      return `<tr class="${cls}"><td>${i + 1}</td>
-        ${tb ? `<td class="mono">${top.reps}x${kg("T", i, top.w)}</td><td class="mono muted">${pct(top.w)}</td>
-               <td class="mono">${bo.length ? `${bo.length}x${bo[0].reps}x${kg("B", i, bo[0].w)}` : "–"}</td><td class="mono muted">${bo.length ? pct(bo[0].w) : ""}</td>`
-          : `<td class="mono">${wk.sets.length}x${top.reps}x${kg("T", i, top.w)}</td><td class="mono muted">${pct(top.w)}</td>`}</tr>`;
+      return head + rowHtml(wk, i, cls, label);
     }).join("")}</table></div>`;
+  function rowHtml(wk, i, cls, label) {
+    if (cfg.model === "custom") {
+      const heaviest = Math.max(...wk.sets.map((s) => s.w));
+      return `<tr class="${cls}"><td>${label}</td><td class="mono">${groupSets(wk.sets).map(setText).join(" · ")}</td><td class="mono muted">${pct(heaviest)}</td></tr>`;
+    }
+    const top = wk.sets[0], bo = wk.sets.filter((s) => s.kind === "Back-off");
+    return `<tr class="${cls}"><td>${label}</td>
+      ${tb ? `<td class="mono">${top.reps}x${kg("T", i, top.w)}</td><td class="mono muted">${pct(top.w)}</td>
+             <td class="mono">${bo.length ? `${bo.length}x${bo[0].reps}x${kg("B", i, bo[0].w)}` : "–"}</td><td class="mono muted">${bo.length ? pct(bo[0].w) : ""}</td>`
+        : `<td class="mono">${wk.sets.length}x${top.reps}x${kg("T", i, top.w)}</td><td class="mono muted">${pct(top.w)}</td>`}</tr>`;
+  }
 }
 function setOverride(idx, part, week, value) {
   const cfg = ui.be.lifts[idx], v = num(value);
@@ -1314,13 +1357,13 @@ function setOverride(idx, part, week, value) {
   render();
 }
 function deleteBlock(id) {
-  if (!confirm("Delete this block?")) return;
+  if (!confirm("Delete this cycle?")) return;
   db.blocks = db.blocks.filter((b) => b.id !== id);
   save(); render();
 }
 
 // Scheme settings shared by every lift unless a lift opts out; weights (1RM, start kg, BW) stay per lift.
-const SHARED = ["model", "topR0", "topR1", "boR0", "boR1", "boSets", "sets", "method", "rpeT0", "rpeT1", "rpeB0", "rpeB1", "pctT0", "pctT1", "pctB0", "pctB1", "kgStep"];
+const SHARED = ["model", "topR0", "topR1", "boR0", "boR1", "boSets", "sets", "method", "rpeT0", "rpeT1", "rpeB0", "rpeB1", "pctT0", "pctT1", "pctB0", "pctB1", "kgStep", "cR0", "cR1"];
 const pick = (o, keys) => Object.fromEntries(keys.map((k) => [k, o[k]]));
 const effCfg = (c) => (c.own ? c : { ...c, ...pick(ui.be.def, SHARED) });
 
@@ -1331,20 +1374,22 @@ function openBlockBuilder(copyId) {
   const lifts = src
     ? src.lifts.map(({ plan, ...cfg }) => (cfg.model === "custom" ? { ...defaultCfg(cfg.lift), own: false } : { ...cfg, own: SHARED.some((k) => cfg[k] !== def[k]) }))
     : ["Squat", "Bench Press", "Deadlift"].map((l) => ({ ...defaultCfg(l), own: false }));
-  ui.be = { name: src ? src.name + " (copy)" : "", start: today(), weeks: src ? String(src.weeks - (hasTest(src) ? 1 : 0)) : "6", test: src ? hasTest(src) : false, def, lifts };
+  ui.be = { name: src ? src.name + " (copy)" : "", start: today(), weeks: src ? String(src.blockWeeks ?? src.weeks - (hasTest(src) ? 1 : 0)) : "6", blocks: String(src?.blocks ?? 1), test: src ? hasTest(src) : false, def, lifts };
   $("main").scrollTop = 0; render();
 }
 function renderBlockBuilder() {
-  const be = ui.be, n = parseInt(be.weeks) || 0;
+  const be = ui.be, n = parseInt(be.weeks) || 0, nb = Math.max(1, parseInt(be.blocks) || 1), total = n * nb + (be.test ? 1 : 0);
   const unused = mainLifts().filter((l) => !be.lifts.some((c) => c.lift === l));
-  setTop("New block", "Add lifts, preview, then save & activate", `<button class="icon" onclick="ui.be=null;render()">${ic("x")}</button>`);
+  setTop("New cycle", "Add lifts, preview, then save & activate", `<button class="icon" onclick="ui.be=null;render()">${ic("x")}</button>`);
   $("main").innerHTML = `
     <div class="card col">
-      <label class="f">Block name<input value="${esc(be.name)}" placeholder="e.g. Winter strength" onchange="ui.be.name=this.value"></label>
-      <div class="row"><label class="f">Start date<input type="date" value="${be.start}" onchange="ui.be.start=this.value;render()"></label>
-        <label class="f">Weeks<input inputmode="numeric" value="${esc(be.weeks)}" onchange="ui.be.weeks=this.value;render()"></label></div>
-      <div class="muted">${n > 0 ? `${dmy(be.start)} – ${dmy(addDays(be.start, (n + (be.test ? 1 : 0)) * 7 - 1))}` : ""}</div>
-      <label class="chk-item"><input type="checkbox" ${be.test ? "checked" : ""} onchange="ui.be.test=this.checked;render()"> Add test week at the end (singles at 90% · 95% · 100% of target)</label>
+      <label class="f">Cycle name<input value="${esc(be.name)}" placeholder="e.g. Winter strength" onchange="ui.be.name=this.value"></label>
+      <label class="f">Start date<input type="date" value="${be.start}" onchange="ui.be.start=this.value;render()"></label>
+      <div class="row"><label class="f">Blocks<input inputmode="numeric" value="${esc(be.blocks)}" onchange="ui.be.blocks=this.value;render()"></label>
+        <label class="f">Weeks per block<input inputmode="numeric" value="${esc(be.weeks)}" onchange="ui.be.weeks=this.value;render()"></label></div>
+      <div class="muted">${n > 0 ? `${total} weeks · ${dmy(be.start)} – ${dmy(addDays(be.start, total * 7 - 1))}` : ""}</div>
+      ${nb > 1 ? `<div class="muted">Each block follows the weekly scheme below. Week 1 of each block steps evenly from the cycle start to the cycle end weight and reps.</div>` : ""}
+      <label class="chk-item"><input type="checkbox" ${be.test ? "checked" : ""} onchange="ui.be.test=this.checked;render()"> Add test week at the end of the cycle (singles at 80% · 90% · 100% of target)</label>
     </div>
     <div class="card col"><div class="title">Default scheme · all lifts</div>${schemeFields(be.def, "ui.be.def")}</div>
     ${be.lifts.map((c, i) => liftEditor(c, i, n)).join("")}
@@ -1354,9 +1399,12 @@ function renderBlockBuilder() {
 }
 const field = (path, c) => (label, key, mode = "decimal") =>
   `<label class="f">${label}<input inputmode="${mode}" value="${esc(c[key])}" onchange="${path}.${key}=this.value;render()"></label>`;
+/** Like field(), but empty means "auto" and the placeholder shows the auto value. */
+const fieldP = (path, c) => (label, key, auto, mode = "numeric") =>
+  `<label class="f">${label}<input inputmode="${mode}" value="${esc(c[key] ?? "")}" placeholder="${esc(auto)}" onchange="${path}.${key}=this.value;render()"></label>`;
 /** Model, reps, load method and its ranges \u2014 used for the default card and for lifts with their own scheme. */
 function schemeFields(c, path) {
-  const f = field(path, c);
+  const f = field(path, c), fp = fieldP(path, c);
   const seg = (key, opts) => `<div class="seg">${opts.map(([v, l]) => `<button class="${c[key] === v ? "sel" : ""}" onclick="${path}.${key}='${v}';render()">${l}</button>`).join("")}</div>`;
   const tb = c.model !== "drop";
   const ranges = {
@@ -1369,9 +1417,12 @@ function schemeFields(c, path) {
     ${tb ? `<div class="row">${f("Back-off reps start", "boR0", "numeric")}${f("→ end", "boR1", "numeric")}${f("Back-off sets", "boSets", "numeric")}</div>` : ""}
     <div class="muted">Load method</div>
     ${seg("method", [["rpe", "RPE"], ["pct", "% of 1RM"], ["kg", "Weight"]])}
-    ${ranges}`;
+    ${ranges}
+    ${(parseInt(ui.be?.blocks) || 1) > 1 ? `<div class="muted">Cycle reps · week 1 of first → last block</div>
+    <div class="row">${fp("Cycle start reps", "cR0", c.topR0)}${fp("→ end reps", "cR1", c.cR0 || c.topR0)}</div>` : ""}`;
 }
 function liftEditor(c, i, n) {
+  const nb = Math.max(1, parseInt(ui.be.blocks) || 1);
   const path = `ui.be.lifts[${i}]`, eff = effCfg(c), f = field(path, c), tb = eff.model !== "drop";
   return `<div class="card col">
     <div class="row"><b class="grow" style="font-size:18px">${esc(c.lift)}</b><button class="icon" onclick="ui.be.lifts.splice(${i},1);render()">${ic("trash")}</button></div>
@@ -1379,6 +1430,11 @@ function liftEditor(c, i, n) {
     ${c.own ? schemeFields(c, path) : `<div class="muted">${modelLabel(eff)} · ${eff.model === "drop" ? `${eff.topR0}→${eff.topR1} reps` : `top ${eff.topR0}→${eff.topR1}, back-off ${eff.boR0}→${eff.boR1}`}</div>`}
     <div class="row">${f("1RM kg", "oneRm")}${eff.method === "kg" ? f(tb ? "Top start kg" : "Start kg", "kgT0") + (tb ? f("Back-off start kg", "kgB0") : "") : ""}</div>
     ${exByName(c.lift)?.bw ? `<div class="row">${f("Bodyweight kg", "bw")}<div class="muted grow">1RM is added load: (0.9·BW + kg) × % − 0.9·BW</div></div>` : ""}
+    ${n > 0 && nb > 1 ? (() => {
+      const w1 = generateLift(eff, n)[0]?.sets[0].w, fp = fieldP(path, c);
+      return `<div class="row">${fp("Cycle start kg", "cW0", fmt(w1), "decimal")}${fp("→ end kg", "cW1", c.cW0 || fmt(w1), "decimal")}</div>
+        <div class="muted">Top set, week 1 of the first → last block. Back-offs move by the same amount.</div>`;
+    })() : ""}
     ${n > 0 ? planTable(eff, builderPlan(eff, n), 0, i, `${path}.testMax=this.value;render()`) : ""}
     ${n > 0 ? `<div class="muted">Tap a weight to set it yourself.</div>` : ""}
   </div>`;
@@ -1389,18 +1445,18 @@ function toggleOwnScheme(i, on) {
   c.own = on;
   render();
 }
-const builderPlan = (c, n) => generateLift(c, n).concat(ui.be.test ? [testWeek(c.lift, num(c.testMax) || defaultTestTarget(c))] : []);
+const builderPlan = (c, n) => generateCycle(c, n, Math.max(1, parseInt(ui.be.blocks) || 1)).concat(ui.be.test ? [testWeek(c.lift, num(c.testMax) || defaultTestTarget(c))] : []);
 function saveBlock() {
-  const be = ui.be, n = parseInt(be.weeks);
-  if (!be.name.trim()) return alert("Give the block a name.");
-  if (!(n > 0)) return alert("Weeks must be a number.");
+  const be = ui.be, n = parseInt(be.weeks), nb = Math.max(1, parseInt(be.blocks) || 1);
+  if (!be.name.trim()) return alert("Give the cycle a name.");
+  if (!(n > 0)) return alert("Weeks per block must be a number.");
   if (!be.lifts.length) return alert("Add at least one lift.");
   const cur = activeBlock();
-  if (cur && !confirm(`This ends the active block "${cur.name}". Continue?`)) return;
+  if (cur && !confirm(`This ends the active cycle "${cur.name}". Continue?`)) return;
   if (cur) { cur.active = false; cur.ended = addDays(be.start, -1) < cur.start ? cur.start : addDays(be.start, -1); }
   const lifts = be.lifts.map((c) => { const e = effCfg(c); return { ...e, plan: builderPlan(e, n) }; });
-  db.blocks.push({ id: nextId(), name: be.name.trim(), start: be.start, weeks: n + (be.test ? 1 : 0), active: true, lifts });
-  ui.be = null; save(); toast("Block saved and active");
+  db.blocks.push({ id: nextId(), name: be.name.trim(), start: be.start, weeks: n * nb + (be.test ? 1 : 0), blocks: nb, blockWeeks: n, active: true, lifts });
+  ui.be = null; save(); toast("Cycle saved and active");
 }
 
 function rpeCard() {
@@ -1683,7 +1739,7 @@ function renderModal() {
     <div class="row"><label class="f">Logged as${pairs("exm-measure", MEASURES, e.measure ?? "reps")}</label>
       <label class="f">Load${pairs("exm-load", LOADS, e.load ?? "kg")}</label></div>
     <div class="muted">Bodyweight exercises can be logged with a resistance band.</div>
-    <label class="chk-item"><input type="checkbox" id="exm-main" ${e.main ? "checked" : ""}> Main lift (can be periodized in Blocks)</label>
+    <label class="chk-item"><input type="checkbox" id="exm-main" ${e.main ? "checked" : ""}> Main lift (can be periodized in Cycles)</label>
     ${locked ? `<div class="muted">Name locked: this exercise has history.</div>` : ""}
     <div class="row">${e.custom && e.id ? `<button class="btn-t red" onclick="deleteExercise()">Delete</button>` : ""}<span class="grow"></span>
       <button class="btn-t" onclick="ui.modal=null;render()">Cancel</button><button class="btn" onclick="saveExercise()">Save</button></div></div>`;
