@@ -252,6 +252,11 @@ function equalSteps(cfg, part, repsByWeek, n, bw) {
   return repsByWeek.map((_, i) => first + i * jump);
 }
 /** How far a week may go above its planned end load: 1% of 1RM (0 when there is no 1RM). */
+/** Heaviest load an RPE scheme allows at these reps: its end RPE (top or back-off) + 1% of 1RM. */
+function rpeCap(cfg, part, reps, bw, tol) {
+  const one = num(cfg.oneRm) ?? 0, p = Rpe.pct(reps, num(cfg[`rpe${part}1`]));
+  return one > 0 && p != null ? (one + bw) * p - bw + tol : Infinity;
+}
 const overTol = (cfg, bw) => { const one = num(cfg.oneRm) ?? 0; return one > 0 ? 0.01 * (one + bw) : 0; };
 
 function generateLift(cfg, n) {
@@ -324,9 +329,11 @@ function generateCycle(cfg, w, nBlocks = 1) {
     return base.map((wk, i) => ({
       block: k + 1, wk: i + 1,
       sets: wk.sets.map((st, j) => {
-        const part = j === 0 || cfg.model === "drop" ? "T" : "B", m = shift[part];
-        const wv = Math.min(r25(st.w + m.dw), m.cap === Infinity ? Infinity : Rpe.floor(m.cap + 1e-9, STEP));
-        return { ...st, reps: Math.max(1, st.reps + m.dr), w: over[`${part}${k * w + i}`] ?? wv };
+        const part = j === 0 || cfg.model === "drop" ? "T" : "B", m = shift[part], reps = Math.max(1, st.reps + m.dr);
+        // RPE schemes: the end RPE is a ceiling for the whole cycle, at each week's own reps (e.g. RPE 9 × 1 ≈ 95.5%).
+        const cap = cfg.method === "rpe" ? rpeCap(cfg, part, reps, bw, tol) : m.cap;
+        const wv = Math.min(r25(st.w + m.dw), cap === Infinity ? Infinity : Rpe.floor(cap + 1e-9, STEP));
+        return { ...st, reps, w: over[`${part}${k * w + i}`] ?? wv };
       }),
     }));
   });
