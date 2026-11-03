@@ -276,18 +276,23 @@ function rpeOf(reps, share) {
 /** Share of 1RM a load is (bodyweight lifts count 0.9·BW), and back. */
 const liftBw = (cfg) => (exByName(cfg.lift)?.bw ? BW_FACTOR * (num(cfg.bw) ?? bwAt()) : 0);
 const shareOf = (cfg, w) => { const one = num(cfg.oneRm) ?? 0, bw = liftBw(cfg); return one + bw > 0 ? (w + bw) / (one + bw) : 0; };
+/** Block 1 week 1 set of a part: "T" = top set, "B" = first back-off (rep-drop sets all count as top). */
+const week1Set = (cfg, base, part) => (part === "B" && cfg.model !== "drop" ? base[0].sets.find((x) => x.kind === "Back-off") : base[0].sets[0]);
 /**
- * Week 1 of block k (0-based). Block 1 is the weekly scheme's week 1; every next block has cRd more reps and a load
- * cLd higher in the cycle's load method: % of 1RM, RPE (at that block's reps) or kg — one value for all lifts.
+ * Week 1 of block k (0-based) for the top set or the back-offs. Block 1 is the weekly scheme's week 1; every next block
+ * changes reps by cRd (top) or bRd (back-off, default same as top) and the load by cLd in the cycle's load method:
+ * % of 1RM, RPE (at that block's reps) or kg — one value for all lifts.
  */
-function cycleWeek1(cfg, base, nBlocks, k) {
-  const top = base[0].sets[0], d = (num(cfg.cLd) ?? 0) * k;
-  const reps = Math.max(1, Math.round(top.reps + k * (num(cfg.cRd) ?? 0)));
+function cycleWeek1(cfg, base, nBlocks, k, part = "T") {
+  const s0 = week1Set(cfg, base, part);
+  if (!s0) return null;
+  const d = (num(cfg.cLd) ?? 0) * k, rd = part === "B" ? num(cfg.bRd) ?? num(cfg.cRd) ?? 0 : num(cfg.cRd) ?? 0;
+  const reps = Math.max(1, Math.round(s0.reps + k * rd));
   const one = num(cfg.oneRm) ?? 0, bw = liftBw(cfg);
-  const auto = !k || !d ? top.w
-    : cfg.cLm === "kg" ? top.w + d
-    : cfg.cLm === "rpe" ? (one + bw) * (Rpe.pct(Math.min(12, reps), rpeOf(Math.min(12, top.reps), shareOf(cfg, top.w)) + d) ?? 0) - bw
-    : (one + bw) * (shareOf(cfg, top.w) + d / 100) - bw;
+  const auto = !k || !d ? s0.w
+    : cfg.cLm === "kg" ? s0.w + d
+    : cfg.cLm === "rpe" ? (one + bw) * (Rpe.pct(Math.min(12, reps), rpeOf(Math.min(12, s0.reps), shareOf(cfg, s0.w)) + d) ?? 0) - bw
+    : (one + bw) * (shareOf(cfg, s0.w) + d / 100) - bw;
   return { reps, w: r25(auto) };
 }
 /**
@@ -298,14 +303,18 @@ function cycleWeek1(cfg, base, nBlocks, k) {
 function generateCycle(cfg, w, nBlocks = 1) {
   const base = generateLift(cfg, w);
   if (!base.length) return [];
-  const top = base[0].sets[0], over = cfg.over || {};
+  const over = cfg.over || {};
   return Array.from({ length: nBlocks }).flatMap((_, k) => {
-    const t = cycleWeek1(cfg, base, nBlocks, k), dw = t.w - top.w, dr = t.reps - top.reps;
+    // Each part moves by the difference between its block-k week 1 and its block-1 week 1.
+    const shift = Object.fromEntries(["T", "B"].map((part) => {
+      const s0 = week1Set(cfg, base, part), t = cycleWeek1(cfg, base, nBlocks, k, part);
+      return [part, s0 && t ? { dr: t.reps - s0.reps, dw: t.w - s0.w } : { dr: 0, dw: 0 }];
+    }));
     return base.map((wk, i) => ({
       block: k + 1, wk: i + 1,
       sets: wk.sets.map((st, j) => {
-        const part = j === 0 || cfg.model === "drop" ? "T" : "B";
-        return { ...st, reps: Math.max(1, st.reps + dr), w: over[`${part}${k * w + i}`] ?? r25(st.w + dw) };
+        const part = j === 0 || cfg.model === "drop" ? "T" : "B", m = shift[part];
+        return { ...st, reps: Math.max(1, st.reps + m.dr), w: over[`${part}${k * w + i}`] ?? r25(st.w + m.dw) };
       }),
     }));
   });
@@ -315,7 +324,7 @@ function defaultCfg(lift, model = "tb") {
   const e1 = sessionsOf(lift).find((s) => s.e1)?.e1 ?? 100;
   return {
     lift, model, method: "rpe", oneRm: fmt(r25(e1)), bw: fmt(bwAt()),
-    rDw: "-1", boRd: "0", boKg: "-10", boSets: "2", sets: "3",
+    rDw: "-1", bDw: "", boKg: "-10", boSets: "2", sets: "3",
     rpeT0: "8", rpeT1: "9.5", rpeB0: "7", rpeB1: "8.5",
     pctT0: model === "drop" ? "75" : "85", pctT1: "92.5", pctB0: "72.5", pctB1: "82.5",
     kgT0: fmt(r25(e1 * (model === "drop" ? 0.75 : 0.85))), kgStep: "2.5",
@@ -1378,7 +1387,7 @@ function deleteBlock(id) {
 }
 
 // Scheme settings shared by every lift unless a lift opts out; weights (1RM, cycle kg, BW) stay per lift.
-const SHARED = ["model", "rDw", "boRd", "boKg", "boSets", "sets", "method", "rpeT0", "rpeT1", "rpeB0", "rpeB1", "pctT0", "pctT1", "pctB0", "pctB1", "kgStep"];
+const SHARED = ["model", "rDw", "bDw", "boKg", "boSets", "sets", "method", "rpeT0", "rpeT1", "rpeB0", "rpeB1", "pctT0", "pctT1", "pctB0", "pctB1", "kgStep"];
 const pick = (o, keys) => Object.fromEntries(keys.map((k) => [k, o[k]]));
 const builderBlocks = () => Math.max(1, parseInt(ui.be.blocks) || 1);
 /**
@@ -1387,12 +1396,14 @@ const builderBlocks = () => Math.max(1, parseInt(ui.be.blocks) || 1);
  */
 function effCfg(c) {
   const be = ui.be, s = c.own ? c : { ...c, ...pick(be.def, SHARED) };
-  const n = parseInt(be.weeks) || 1, r0 = num(be.cR0) ?? 5, rLast = r0 + (num(s.rDw) ?? 0) * (n - 1), bo = num(s.boRd) ?? 0;
+  const n = parseInt(be.weeks) || 1, r0 = num(be.cR0) ?? 5, rLast = r0 + (num(s.rDw) ?? 0) * (n - 1);
+  // Back-off reps: own start and own weekly change; empty = same as the top set.
+  const b0 = num(be.bR0) ?? r0, bLast = b0 + (num(s.bDw) ?? num(s.rDw) ?? 0) * (n - 1);
   const kgT0 = num(c.kgT0) ?? 0;
   return {
-    ...s, topR0: String(r0), topR1: String(rLast), boR0: String(r0 + bo), boR1: String(rLast + bo),
+    ...s, topR0: String(r0), topR1: String(rLast), boR0: String(b0), boR1: String(bLast),
     kgT0: String(kgT0), kgB0: String(kgT0 + (num(s.boKg) ?? 0)),
-    cR0: be.cR0, cRd: be.cRd, cLm: be.cLm, cLd: be.cLd,
+    cR0: be.cR0, cRd: be.cRd, bR0: be.bR0, bRd: be.bRd, cLm: be.cLm, cLd: be.cLd,
   };
 }
 
@@ -1403,7 +1414,7 @@ function openBlockBuilder(copyId) {
   const upgrade = (cfg) => ({
     ...cfg,
     rDw: cfg.rDw ?? String(srcN > 1 ? Math.round((num(cfg.topR1) - num(cfg.topR0)) / (srcN - 1)) : 0),
-    boRd: cfg.boRd ?? String((num(cfg.boR0) ?? num(cfg.topR0)) - num(cfg.topR0)),
+    bDw: cfg.bDw ?? "",
     boKg: cfg.boKg ?? String(num(cfg.kgB0) != null && num(cfg.kgT0) != null ? num(cfg.kgB0) - num(cfg.kgT0) : -10),
   });
   const generated = (src?.lifts.filter((l) => l.model !== "custom") ?? []).map(upgrade);
@@ -1418,7 +1429,7 @@ function openBlockBuilder(copyId) {
   ui.be = {
     name: src ? src.name + " (copy)" : "", start: today(), weeks: String(srcN), blocks: String(src?.blocks ?? 1),
     test: src ? hasTest(src) : false, def, lifts,
-    cR0: g0?.cR0 || g0?.topR0 || "6", cRd: g0?.cRd ?? "-2",
+    cR0: g0?.cR0 || g0?.topR0 || "6", cRd: g0?.cRd ?? "-2", bR0: g0?.bR0 ?? "", bRd: g0?.bRd ?? "",
     cLm: g0?.cLm ?? "pct", cLd: g0?.cLd ?? "5", chart: 0,
   };
   $("main").scrollTop = 0; render();
@@ -1446,11 +1457,12 @@ function renderBlockBuilder() {
 const CYCLE_LOAD = { pct: ["% of 1RM", "+% of 1RM / block", "5"], rpe: ["RPE", "+RPE / block", "0.5"], kg: ["kg", "+kg / block", "10"] };
 /** ② Week 1 of each block: start reps + change per block and one load change for all lifts. */
 function cycleCard(n, nb) {
-  const be = ui.be, f = field("ui.be", be);
+  const be = ui.be, f = field("ui.be", be), fp = fieldP("ui.be", be);
   const rows = be.lifts.map((c) => { const e = effCfg(c), base = generateLift(e, n); return { c, e, base }; });
-  const lm = CYCLE_LOAD[be.cLm] ? be.cLm : "pct";
+  const lm = CYCLE_LOAD[be.cLm] ? be.cLm : "pct", anyTb = rows.some((r) => r.e.model === "tb");
   const evenFields = () => `
-    <div class="row">${f("Start reps", "cR0", "numeric")}${nb > 1 ? f("Reps change / block", "cRd") : ""}</div>
+    <div class="row">${f(anyTb ? "Top start reps" : "Start reps", "cR0", "numeric")}${nb > 1 ? f(anyTb ? "Top change / block" : "Reps change / block", "cRd") : ""}</div>
+    ${anyTb ? `<div class="row">${fp("Back-off start reps", "bR0", be.cR0)}${nb > 1 ? fp("Back-off change / block", "bRd", be.cRd, "decimal") : ""}</div>` : ""}
     ${nb > 1 ? `<div class="muted">Load change / block · all lifts</div>
       <div class="seg">${Object.entries(CYCLE_LOAD).map(([v, [l, , d]]) =>
         `<button class="${lm === v ? "sel" : ""}" onclick="ui.be.cLm='${v}';ui.be.cLd='${d}';render()">${l}</button>`).join("")}</div>
@@ -1498,9 +1510,12 @@ function stairsChart(cfg, plan, perBlock) {
 }
 const field = (path, c) => (label, key, mode = "decimal") =>
   `<label class="f">${label}<input inputmode="${mode}" value="${esc(c[key])}" onchange="${path}.${key}=this.value;render()"></label>`;
+/** Like field(), but empty means "same as …" and the placeholder shows that value. */
+const fieldP = (path, c) => (label, key, auto, mode = "numeric") =>
+  `<label class="f">${label}<input inputmode="${mode}" value="${esc(c[key] ?? "")}" placeholder="${esc(auto ?? "")}" onchange="${path}.${key}=this.value;render()"></label>`;
 /** Model, weekly reps change, load method and its ranges — used for the default card and for lifts with their own scheme. */
 function schemeFields(c, path) {
-  const f = field(path, c);
+  const f = field(path, c), fp = fieldP(path, c);
   const seg = (key, opts) => `<div class="seg">${opts.map(([v, l]) => `<button class="${c[key] === v ? "sel" : ""}" onclick="${path}.${key}='${v}';render()">${l}</button>`).join("")}</div>`;
   const tb = c.model !== "drop";
   const ranges = {
@@ -1509,13 +1524,15 @@ function schemeFields(c, path) {
     kg: `<div class="row">${f("+kg / week", "kgStep")}${tb ? f("Back-off kg vs top", "boKg") : ""}</div>`,
   }[c.method];
   const n = parseInt(ui.be.weeks) || 0, r0 = num(ui.be.cR0) ?? 5, d = num(c.rDw) ?? 0;
-  const ex = Array.from({ length: Math.min(n, 8) }, (_, i) => Math.max(1, Math.round(r0 + i * d))).join(" → ");
+  const b0 = num(ui.be.bR0) ?? r0, bd = num(c.bDw) ?? d;
+  const seq = (a, step) => Array.from({ length: Math.min(n, 8) }, (_, i) => Math.max(1, Math.round(a + i * step))).join(" → ") + (n > 8 ? " → …" : "");
   return `${seg("model", [["tb", "Top + back-off"], ["drop", "Rep drop"]])}
-    <div class="row">${f("Reps change / week", "rDw")}${tb ? f("Back-off reps vs top", "boRd") + f("Back-off sets", "boSets", "numeric") : f("Sets", "sets", "numeric")}</div>
+    ${tb ? `<div class="row">${f("Top reps / week", "rDw")}${fp("Back-off reps / week", "bDw", c.rDw, "decimal")}${f("Back-off sets", "boSets", "numeric")}</div>`
+      : `<div class="row">${f("Reps change / week", "rDw")}${f("Sets", "sets", "numeric")}</div>`}
     <div class="muted">Load method</div>
     ${seg("method", [["rpe", "RPE"], ["pct", "% of 1RM"], ["kg", "Weight"]])}
     ${ranges}
-    ${n > 0 ? `<div class="muted">Block 1 reps: ${ex}${n > 8 ? " → …" : ""}</div>` : ""}`;
+    ${n > 0 ? `<div class="muted">Block 1 reps · ${tb ? `top ${seq(r0, d)} · back-off ${seq(b0, bd)}` : seq(r0, d)}</div>` : ""}`;
 }
 function liftEditor(c, i, n) {
   const nb = builderBlocks(), path = `ui.be.lifts[${i}]`, eff = effCfg(c), f = field(path, c);
@@ -1523,7 +1540,7 @@ function liftEditor(c, i, n) {
   return `<div class="card col">
     <div class="row"><b class="grow" style="font-size:18px">${esc(c.lift)}</b><button class="icon" onclick="ui.be.lifts.splice(${i},1);render()">${ic("trash")}</button></div>
     <label class="chk-item"><input type="checkbox" ${c.own ? "checked" : ""} onchange="toggleOwnScheme(${i}, this.checked)"> Different from default scheme</label>
-    ${c.own ? schemeFields(c, path) : `<div class="muted">${modelLabel(eff)} · ${d > 0 ? "+" : ""}${fmt(d)} reps / week</div>`}
+    ${c.own ? schemeFields(c, path) : `<div class="muted">${modelLabel(eff)} · top ${d > 0 ? "+" : ""}${fmt(d)} reps / week${eff.model === "tb" ? ` · back-off ${eff.boR0}→${eff.boR1} reps` : ""}</div>`}
     <div class="row">${f("1RM kg", "oneRm")}${eff.method === "kg" ? f("Start kg", "kgT0") : ""}</div>
     ${exByName(c.lift)?.bw ? `<div class="row">${f("Bodyweight kg", "bw")}<div class="muted grow">1RM is added load: (0.9·BW + kg) × % − 0.9·BW</div></div>` : ""}
     ${n > 0 ? planTable(eff, builderPlan(eff, n), 0, i, `${path}.testMax=this.value;render()`) : ""}
