@@ -182,3 +182,5 @@ table.hist.fit td, table.hist.fit th { padding: 5px 3px; }
 .pool { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 6px 64px; }
 .pool-btn { margin-left: 64px; align-self: flex-start; }
 tr.blk-row td { color: var(--t2); font-weight: 600; padding-top: 8px; }
+.ctbl td, .ctbl th { text-align: center; } .ctbl td:first-child, .ctbl th:first-child { text-align: left; }
+.ctbl input.ov { width: 54px; }
