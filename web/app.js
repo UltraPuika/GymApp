@@ -246,11 +246,13 @@ function rawLoad(cfg, part, reps, i, n, bw) {
 function equalSteps(cfg, part, repsByWeek, n, bw) {
   const first = r25(rawLoad(cfg, part, repsByWeek[0], 0, n, bw));
   if (n === 1) return [first];
-  const limit = rawLoad(cfg, part, repsByWeek[n - 1], n - 1, n, bw);
+  const limit = rawLoad(cfg, part, repsByWeek[n - 1], n - 1, n, bw), tol = overTol(cfg, bw);
   let jump = r25((limit - first) / (n - 1));
-  while (jump > STEP && first + (n - 1) * jump - limit >= jump) jump -= STEP;
+  while (jump > STEP && (first + (n - 1) * jump - limit >= jump || first + (n - 1) * jump - limit > tol)) jump -= STEP;
   return repsByWeek.map((_, i) => first + i * jump);
 }
+/** How far a week may go above its planned end load: 1% of 1RM (0 when there is no 1RM). */
+const overTol = (cfg, bw) => { const one = num(cfg.oneRm) ?? 0; return one > 0 ? 0.01 * (one + bw) : 0; };
 
 function generateLift(cfg, n) {
   if (!(n > 0)) return [];
@@ -293,7 +295,7 @@ function cycleWeek1(cfg, base, nBlocks, k, part = "T") {
     : cfg.cLm === "kg" ? s0.w + d
     : cfg.cLm === "rpe" ? (one + bw) * (Rpe.pct(Math.min(12, reps), rpeOf(Math.min(12, s0.reps), shareOf(cfg, s0.w)) + d) ?? 0) - bw
     : (one + bw) * (shareOf(cfg, s0.w) + d / 100) - bw;
-  return { reps, w: r25(auto) };
+  return { reps, w: r25(auto), raw: auto };
 }
 /**
  * A cycle is nBlocks blocks of w weeks each. Inside a block the weeks follow the scheme (week-to-week reps and weight);
@@ -303,18 +305,28 @@ function cycleWeek1(cfg, base, nBlocks, k, part = "T") {
 function generateCycle(cfg, w, nBlocks = 1) {
   const base = generateLift(cfg, w);
   if (!base.length) return [];
-  const over = cfg.over || {};
+  const over = cfg.over || {}, bw = liftBw(cfg), tol = overTol(cfg, bw);
+  // Planned end load of each part in block 1 (the scheme's last-week target before rounding).
+  const lastSet = (part) => (part === "B" && cfg.model !== "drop" ? base[w - 1].sets.find((x) => x.kind === "Back-off") : base[w - 1].sets[0]);
+  const limit = Object.fromEntries(["T", "B"].map((part) => {
+    const ls = lastSet(part);
+    return [part, ls ? rawLoad(cfg, part, ls.reps, w - 1, w, bw) : null];
+  }));
   return Array.from({ length: nBlocks }).flatMap((_, k) => {
-    // Each part moves by the difference between its block-k week 1 and its block-1 week 1.
+    // Each part moves by the difference between its block-k week 1 and its block-1 week 1. No week goes more than
+    // 1% of 1RM above that part's planned end load (moved by the same block step); rounding goes down when it would.
     const shift = Object.fromEntries(["T", "B"].map((part) => {
       const s0 = week1Set(cfg, base, part), t = cycleWeek1(cfg, base, nBlocks, k, part);
-      return [part, s0 && t ? { dr: t.reps - s0.reps, dw: t.w - s0.w } : { dr: 0, dw: 0 }];
+      if (!s0 || !t) return [part, { dr: 0, dw: 0, cap: Infinity }];
+      const cap = limit[part] == null ? Infinity : limit[part] + (t.raw - s0.w) + tol;
+      return [part, { dr: t.reps - s0.reps, dw: t.w - s0.w, cap }];
     }));
     return base.map((wk, i) => ({
       block: k + 1, wk: i + 1,
       sets: wk.sets.map((st, j) => {
         const part = j === 0 || cfg.model === "drop" ? "T" : "B", m = shift[part];
-        return { ...st, reps: Math.max(1, st.reps + m.dr), w: over[`${part}${k * w + i}`] ?? r25(st.w + m.dw) };
+        const wv = Math.min(r25(st.w + m.dw), m.cap === Infinity ? Infinity : Rpe.floor(m.cap + 1e-9, STEP));
+        return { ...st, reps: Math.max(1, st.reps + m.dr), w: over[`${part}${k * w + i}`] ?? wv };
       }),
     }));
   });
