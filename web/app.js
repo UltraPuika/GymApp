@@ -303,40 +303,54 @@ function cycleWeek1(cfg, base, nBlocks, k, part = "T") {
   return { reps, w: r25(auto), raw: auto };
 }
 /**
- * A cycle is nBlocks blocks of w weeks each. Inside a block the weeks follow the scheme (week-to-week reps and weight);
- * every week keeps its offset from its block's week 1, which comes from cycleWeek1.
+ * A cycle is nBlocks blocks of w weeks each. Hard rules for each part (top set, back-offs):
+ * - weekly jumps are equal (the scheme's equal steps), and so are the jumps between blocks (one kg step per block,
+ *   from the cycle's load change);
+ * - no set goes above its ceiling: the end RPE at that set's reps (RPE schemes) or the planned end load moved by the
+ *   block step (% and kg schemes), each + 1% of 1RM.
+ * When a set would go over, the whole part moves down by the same amount, starts included, so the jumps stay equal
+ * and the heaviest set lands as close to its ceiling as the weight step allows.
  * Overrides (cfg.over) are keyed by the week index within the whole cycle.
  */
 function generateCycle(cfg, w, nBlocks = 1) {
   const base = generateLift(cfg, w);
   if (!base.length) return [];
   const over = cfg.over || {}, bw = liftBw(cfg), tol = overTol(cfg, bw);
-  // Planned end load of each part in block 1 (the scheme's last-week target before rounding).
+  const partOf = (j) => (j === 0 || cfg.model === "drop" ? "T" : "B");
   const lastSet = (part) => (part === "B" && cfg.model !== "drop" ? base[w - 1].sets.find((x) => x.kind === "Back-off") : base[w - 1].sets[0]);
-  const limit = Object.fromEntries(["T", "B"].map((part) => {
-    const ls = lastSet(part);
-    return [part, ls ? rawLoad(cfg, part, ls.reps, w - 1, w, bw) : null];
+  const parts = Object.fromEntries(["T", "B"].map((part) => {
+    const s0 = week1Set(cfg, base, part);
+    if (!s0) return [part, null];
+    // One kg step per block (block 1 → 2), so every block starts the same jump above the one before.
+    const t1 = nBlocks > 1 ? cycleWeek1(cfg, base, nBlocks, 1, part) : null;
+    const stepRaw = t1 ? t1.raw - s0.w : 0, step = r25(stepRaw);
+    const dr = (k) => cycleWeek1(cfg, base, nBlocks, k, part).reps - s0.reps;
+    const ls = lastSet(part), limit = ls ? rawLoad(cfg, part, ls.reps, w - 1, w, bw) : null;
+    return [part, { step, stepRaw, dr, limit }];
   }));
-  return Array.from({ length: nBlocks }).flatMap((_, k) => {
-    // Each part moves by the difference between its block-k week 1 and its block-1 week 1. No week goes more than
-    // 1% of 1RM above that part's planned end load (moved by the same block step); rounding goes down when it would.
-    const shift = Object.fromEntries(["T", "B"].map((part) => {
-      const s0 = week1Set(cfg, base, part), t = cycleWeek1(cfg, base, nBlocks, k, part);
-      if (!s0 || !t) return [part, { dr: 0, dw: 0, cap: Infinity }];
-      const cap = limit[part] == null ? Infinity : limit[part] + (t.raw - s0.w) + tol;
-      return [part, { dr: t.reps - s0.reps, dw: t.w - s0.w, cap }];
-    }));
-    return base.map((wk, i) => ({
-      block: k + 1, wk: i + 1,
-      sets: wk.sets.map((st, j) => {
-        const part = j === 0 || cfg.model === "drop" ? "T" : "B", m = shift[part], reps = Math.max(1, st.reps + m.dr);
-        // RPE schemes: the end RPE is a ceiling for the whole cycle, at each week's own reps (e.g. RPE 9 × 1 ≈ 95.5%).
-        const cap = cfg.method === "rpe" ? rpeCap(cfg, part, reps, bw, tol) : m.cap;
-        const wv = Math.min(r25(st.w + m.dw), cap === Infinity ? Infinity : Rpe.floor(cap + 1e-9, STEP));
-        return { ...st, reps, w: over[`${part}${k * w + i}`] ?? wv };
-      }),
-    }));
-  });
+  // The plan before the ceiling check: block-1 weeks moved by k block steps.
+  const draft = Array.from({ length: nBlocks }, (_, k) => base.map((wk) => wk.sets.map((st, j) => {
+    const m = parts[partOf(j)];
+    return { ...st, reps: Math.max(1, st.reps + m.dr(k)), w: r25(st.w + k * m.step) };
+  })));
+  const ceiling = (part, k, reps) => {
+    if (cfg.method === "rpe") return rpeCap(cfg, part, reps, bw, tol);
+    const m = parts[part];
+    return m.limit == null ? Infinity : m.limit + k * m.stepRaw + tol;
+  };
+  // How far each part has to move down so that no set is over its ceiling (a multiple of the weight step).
+  const down = { T: 0, B: 0 };
+  draft.forEach((blk, k) => blk.forEach((sets) => sets.forEach((st, j) => {
+    const part = partOf(j), cap = ceiling(part, k, st.reps);
+    if (cap !== Infinity) down[part] = Math.max(down[part], st.w - Rpe.floor(cap + 1e-9, STEP));
+  })));
+  return draft.flatMap((blk, k) => blk.map((sets, i) => ({
+    block: k + 1, wk: i + 1,
+    sets: sets.map((st, j) => {
+      const part = partOf(j), lower = Math.ceil(down[part] / STEP - 1e-9) * STEP;
+      return { ...st, w: over[`${part}${k * w + i}`] ?? r25(st.w - lower) };
+    }),
+  })));
 }
 
 function defaultCfg(lift, model = "tb") {
