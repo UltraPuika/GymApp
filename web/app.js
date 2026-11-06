@@ -215,6 +215,13 @@ const variationsOf = (name) => exByName(name)?.variations ?? [];
 /** A standard set has no variation; only standard sets count towards PRs, e1RM and test targets. */
 const isStd = (x) => !x?.mods?.length;
 const modText = (mods) => (mods?.length ? mods.join(" + ") : "");
+/** Best e1RM logged for exactly this variation combination (null when never done). */
+function variantE1(lift, mods) {
+  const key = modText(mods), sets = allHistory().filter((h) => h.lift === lift && h.reps > 0 && h.w != null && !isStd(h) && modText(h.mods) === key);
+  return sets.length ? Math.max(...sets.map((h) => Rpe.oneRm(h.w, h.reps, 10, bwOf(lift, h.date)))) : null;
+}
+/** "Squat", or "Squat · Band + Pin" for a cycle entry with its own variation progression. */
+const cfgName = (c) => (c.variant?.length ? `${c.lift} · ${modText(c.variant)}` : c.lift);
 const modTag = (mods) => (mods?.length ? ` <span class="mods">${esc(modText(mods))}</span>` : "");
 /** Toggles a variation in a set's list, kept in the exercise's own variation order. */
 function toggled(list, v, name) {
@@ -388,7 +395,8 @@ function generateCycle(cfg, w, nBlocks = 1) {
     block: k + 1, wk: i + 1,
     sets: sets.map((st, j) => {
       const part = partOf(j), lower = Math.ceil(down[part] / STEP - 1e-9) * STEP;
-      const mods = cfg.mods?.[j]; // the lift's variation for set j, the same every week
+      // A variation entry tags all its sets; otherwise the lift's variation for set j, the same every week.
+      const mods = cfg.variant?.length ? cfg.variant : cfg.mods?.[j];
       return { ...st, w: over[`${part}${k * w + i}`] ?? r25(st.w - lower), ...(mods?.length ? { mods: [...mods] } : {}) };
     }),
   })));
@@ -414,13 +422,15 @@ function expand(entries) {
 
 function planFor(name, date = today()) {
   const b = activeBlock();
-  const cfg = b?.lifts.find((l) => l.lift === name);
-  if (cfg) {
+  // The lift's standard entry first, then its variation entries (each with its own progression), in cycle order.
+  const cfgs = (b?.lifts.filter((l) => l.lift === name) ?? []).sort((x, y) => !!x.variant?.length - !!y.variant?.length);
+  if (cfgs.length) {
     let wk = blockWeek(b, date);
     const weekStart = addDays(mondayOf(b.start), (wk - 1) * 7);
     // Already trained this lift in the current block week → next session gets next week's sets.
     if (sessionsOf(name).some((s) => s.date >= weekStart && s.date < date)) wk++;
-    if (wk >= 1 && wk <= b.weeks) return { type: "block", week: wk, sets: expand(cfg.plan[wk - 1].sets) };
+    const sets = wk >= 1 && wk <= b.weeks ? cfgs.flatMap((c) => c.plan[wk - 1]?.sets ?? []) : [];
+    if (sets.length) return { type: "block", week: wk, sets: expand(sets) };
   }
   const last = sessionsOf(name).find((s) => s.date !== date);
   if (last) return { type: "last", sets: expand(last.entries) };
@@ -1414,7 +1424,7 @@ function blockCard(b) {
     <div class="row" style="cursor:pointer" onclick="ui.blockOpen[${b.id}]=${!open};render()">
       <div class="grow"><b>${esc(b.name)}</b> ${b.active ? '<span class="badge">ACTIVE</span>' : ""}
         <div class="muted">${dmy(b.start)} – ${dmy(end)} · ${nBlocks(b) > 1 ? `${nBlocks(b)} blocks × ${b.blockWeeks} weeks${hasTest(b) ? " + test" : ""}` : `${b.weeks} weeks`}${b.active && wk >= 1 && wk <= b.weeks ? ` · now ${cyclePos(b, wk)}` : ""}</div>
-        <div class="muted">${b.lifts.map((l) => esc(l.lift)).join(" · ")}</div></div><span>${chev(open)}</span></div>
+        <div class="muted">${b.lifts.map((l) => esc(cfgName(l))).join(" · ")}</div></div><span>${chev(open)}</span></div>
     ${open ? `${b.lifts.map((l, li) => planTable(l, l.plan, b.active ? wk : 0, null, `setTestTarget(${b.id},${li},this.value)`)).join("")}
       <div class="row wrap">${hasTest(b)
         ? `<button class="btn-t" onclick="removeTestWeek(${b.id})">Remove test week</button>`
@@ -1435,7 +1445,7 @@ const defaultTestTarget = (cfg) =>
 const hasTest = (b) => b.lifts.some((l) => l.plan.at(-1)?.test);
 function addTestWeek(id) {
   const b = db.blocks.find((x) => x.id === id);
-  b.lifts.forEach((l) => l.plan.push(testWeek(l.lift, defaultTestTarget(l))));
+  b.lifts.forEach((l) => { if (!l.variant?.length) l.plan.push(testWeek(l.lift, defaultTestTarget(l))); });
   b.weeks += 1;
   save(); toast("Test week added — tap a target to change it");
 }
@@ -1466,7 +1476,7 @@ function planTable(cfg, plan, curWeek = 0, editIdx = null, testEdit = null) {
     const target = testEdit ? `<input class="ov" inputmode="decimal" value="${fmt(last.w)}" onchange="${testEdit}">` : fmt(last.w);
     return `<td>T</td><td class="mono" colspan="${tb ? 3 : 1}">${wk.sets.slice(0, -1).map(setText).join(" · ")} · 1x${target}</td><td class="mono muted">${pct(last.w)}</td>`;
   };
-  return `<div class="plan-tbl"><div class="row"><b>${esc(cfg.lift)}</b> <span class="muted grow">${modelLabel(cfg)}</span>
+  return `<div class="plan-tbl"><div class="row"><b>${esc(cfgName(cfg))}</b> <span class="muted grow">${modelLabel(cfg)}</span>
       ${editIdx != null && Object.keys(over).length ? `<button class="btn-t sm" onclick="ui.be.lifts[${editIdx}].over={};render()">Reset weights</button>` : ""}</div>
     <table class="hist fit"><tr><th>Wk</th>${tb ? `<th>Top</th><th>%</th><th>Back-off</th><th>%</th>` : `<th>Sets</th><th>%</th>`}</tr>
     ${plan.map((wk, i) => {
@@ -1539,7 +1549,7 @@ function openBlockBuilder(copyId) {
     bDw: cfg.bDw ?? "",
     boKg: cfg.boKg ?? String(num(cfg.kgB0) != null && num(cfg.kgT0) != null ? num(cfg.kgB0) - num(cfg.kgT0) : -10),
   });
-  const generated = (src?.lifts.filter((l) => l.model !== "custom") ?? []).map(upgrade);
+  const generated = (src?.lifts.filter((l) => l.model !== "custom").sort((x, y) => !!x.variant?.length - !!y.variant?.length) ?? []).map(upgrade);
   const def = pick(generated[0] ?? defaultCfg("Squat"), SHARED);
   const lifts = src
     ? src.lifts.map(({ plan, ...cfg }) => (cfg.model === "custom" ? { ...defaultCfg(cfg.lift), own: false } : (() => {
@@ -1598,10 +1608,10 @@ function cycleCard(n, nb) {
       <div class="muted">Block 1 load comes from the weekly scheme and each lift's 1RM.</div>` : ""}`;
   const ci = Math.min(be.chart || 0, rows.length - 1), r = rows[ci];
   const chips = rows.length > 1 ? `<div class="row wrap">${rows.map((x, i) =>
-    `<button class="fchip ${i === ci ? "sel" : ""}" onclick="ui.be.chart=${i};render()">${esc(x.c.lift)}</button>`).join("")}</div>` : "";
+    `<button class="fchip ${i === ci ? "sel" : ""}" onclick="ui.be.chart=${i};render()">${esc(cfgName(x.c))}</button>`).join("")}</div>` : "";
   return `<div class="card col"><div class="title">② Cycle · ${nb > 1 ? "block to block (week 1 of each block)" : "week 1 start"}</div>
     ${evenFields()}
-    ${chips}<div class="row"><span class="muted grow">${esc(r.c.lift)} · top set by week</span><span class="muted"><span class="lime">━</span> kg · % of 1RM &nbsp; ▮ reps</span></div>
+    ${chips}<div class="row"><span class="muted grow">${esc(cfgName(r.c))} · top set by week</span><span class="muted"><span class="lime">━</span> kg · % of 1RM &nbsp; ▮ reps</span></div>
     ${stairsChart(r.e, generateCycle(r.e, n, nb), n)}
   </div>`;
 }
@@ -1664,17 +1674,37 @@ function schemeFields(c, path) {
 }
 function liftEditor(c, i, n) {
   const nb = builderBlocks(), path = `ui.be.lifts[${i}]`, eff = effCfg(c), f = field(path, c);
-  const d = num(eff.rDw) ?? 0;
-  return `<div class="card col">
-    <div class="row"><b class="grow" style="font-size:18px">${esc(c.lift)}</b><button class="icon" onclick="ui.be.lifts.splice(${i},1);render()">${ic("trash")}</button></div>
+  const d = num(eff.rDw) ?? 0, isVar = Array.isArray(c.variant), vars = variationsOf(c.lift);
+  const vE1 = isVar && c.variant.length ? variantE1(c.lift, c.variant) : null;
+  return `<div class="card col ${isVar ? "var-entry" : ""}">
+    <div class="row"><b class="grow" style="font-size:18px">${esc(c.lift)}${isVar ? ` <span class="badge sm">VARIATION</span>` : ""}</b><button class="icon" onclick="ui.be.lifts.splice(${i},1);render()">${ic("trash")}</button></div>
+    ${isVar ? `<div class="muted">Extra sets with their own progression · pick the variation (combine any)</div>
+      <div class="row wrap" style="gap:6px">${[...new Set([...vars, ...c.variant])].map((v) =>
+        `<button class="fchip ${c.variant.includes(v) ? "sel" : ""}" onclick="toggleVariant(${i},${q(v)})">${esc(v)}</button>`).join("")}</div>
+      ${vE1 ? `<div class="row"><span class="muted grow">Best logged e1RM with ${esc(modText(c.variant))}: <b class="lime">${fmt(r25(vE1))} kg</b></span>
+        <button class="btn-t sm" onclick="ui.be.lifts[${i}].oneRm=${q(fmt(r25(vE1)))};render()">Use as 1RM</button></div>` : ""}` : ""}
     <label class="chk-item"><input type="checkbox" ${c.own ? "checked" : ""} onchange="toggleOwnScheme(${i}, this.checked)"> Different from default scheme</label>
     ${c.own ? schemeFields(c, path) : `<div class="muted">${modelLabel(eff)} · top ${d > 0 ? "+" : ""}${fmt(d)} reps / week${eff.model === "tb" ? ` · back-off ${eff.boR0}→${eff.boR1} reps` : ""}</div>`}
     <div class="row">${f("1RM kg", "oneRm")}${eff.method === "kg" ? f("Start kg", "kgT0") : ""}</div>
     ${exByName(c.lift)?.bw ? `<div class="row">${f("Bodyweight kg", "bw")}<div class="muted grow">1RM is added load: (0.9·BW + kg) × % − 0.9·BW</div></div>` : ""}
-    ${n > 0 ? cycleModPicker(c, i, eff, n) : ""}
+    ${n > 0 && !isVar ? cycleModPicker(c, i, eff, n) : ""}
     ${n > 0 ? planTable(eff, builderPlan(eff, n), 0, i, `${path}.testMax=this.value;render()`) : ""}
-    ${n > 0 ? `<div class="muted">Tap a weight to set it yourself.</div>` : ""}
+    ${n > 0 ? `<div class="muted">Tap a weight to set it yourself.${isVar ? " 1RM here is for this variation — loads are planned from it." : ""}</div>` : ""}
+    ${!isVar && vars.length ? `<button class="btn-t sm" style="align-self:flex-start" onclick="addVariantEntry(${i})">${ic("plus")} Variation sets with own progression</button>` : ""}
   </div>`;
+}
+/** A variation entry (e.g. Squat · Band + Pin) progresses week by week like a lift; its sets follow the lift's in the workout. */
+function addVariantEntry(i) {
+  const lift = ui.be.lifts[i].lift;
+  let at = i + 1;
+  while (ui.be.lifts[at]?.lift === lift && ui.be.lifts[at].variant) at++;
+  ui.be.lifts.splice(at, 0, { ...defaultCfg(lift), own: false, variant: [] });
+  render();
+}
+function toggleVariant(i, v) {
+  const c = ui.be.lifts[i];
+  c.variant = toggled(c.variant, v, c.lift);
+  render();
 }
 /** Variation per set of a week (top, back-offs) for a lift that has variations; every week of the cycle uses it. */
 function cycleModPicker(c, i, eff, n) {
@@ -1701,12 +1731,13 @@ function toggleOwnScheme(i, on) {
   c.own = on;
   render();
 }
-const builderPlan = (c, n) => generateCycle(c, n, builderBlocks()).concat(ui.be.test ? [testWeek(c.lift, num(c.testMax) || defaultTestTarget(c))] : []);
+const builderPlan = (c, n) => generateCycle(c, n, builderBlocks()).concat(ui.be.test && !c.variant?.length ? [testWeek(c.lift, num(c.testMax) || defaultTestTarget(c))] : []);
 function saveBlock() {
   const be = ui.be, n = parseInt(be.weeks), nb = builderBlocks();
   if (!be.name.trim()) return alert("Give the cycle a name.");
   if (!(n > 0)) return alert("Weeks per block must be a number.");
   if (!be.lifts.length) return alert("Add at least one lift.");
+  if (be.lifts.some((c) => Array.isArray(c.variant) && !c.variant.length)) return alert("Pick a variation for each variation entry (or delete it).");
   const cur = activeBlock();
   if (cur && !confirm(`This ends the active cycle "${cur.name}". Continue?`)) return;
   if (cur) { cur.active = false; cur.ended = addDays(be.start, -1) < cur.start ? cur.start : addDays(be.start, -1); }
