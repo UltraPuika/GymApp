@@ -2,7 +2,7 @@
 // Inside the Android app data goes to its SQLite database (AndroidDb bridge); in a browser to localStorage.
 const storage = window.AndroidDb ?? localStorage;
 const STORE = "gymlog-db";
-const SCHEMA = 5;
+const SCHEMA = 6;
 ["ironlog-v1", "ironlog-v2"].forEach((k) => storage.removeItem(k));
 // Keep data saved under the app's former name.
 if (!storage.getItem(STORE) && storage.getItem("ironlog-db")) storage.setItem(STORE, storage.getItem("ironlog-db"));
@@ -46,6 +46,11 @@ const MIGRATIONS = {
       if (wk?.test) l.plan[l.plan.length - 1] = testWeek(l.lift, wk.sets.at(-1).w, d.exercises.find((e) => e.name === l.lift)?.bw ? BW_FACTOR * kg : 0);
     }));
   },
+  // Several muscle groups per exercise (first = primary) and per-exercise variations (paused, pin, band, …).
+  6: (d) => d.exercises.forEach((e) => {
+    e.muscles ??= [e.muscle, ...(SECONDARY_MUSCLES[e.name] ?? [])].filter(Boolean);
+    e.variations ??= [...(DEFAULT_VARIATIONS[e.name] ?? [])];
+  }),
 };
 function migrate(d) {
   d.schema ||= 1;
@@ -168,6 +173,7 @@ const logType = (name) => { const e = exByName(name); return { measure: e?.measu
 /** Session progress number: e1RM for loaded reps, max reps for bodyweight, longest hold for static work. */
 function sessionBest(entries, name, date) {
   const { measure, load } = logType(name);
+  entries = entries.filter(isStd); // variation sets (paused, pins, chains…) are not standard PRs
   if (measure === "time") return Math.max(0, ...entries.map((e) => e.t || 0)) || null;
   if (load === "bw") return Math.max(0, ...entries.map((e) => e.reps || 0)) || null;
   return bestE1(entries.filter((e) => !e.band), name, date); // band-assisted sets aren't comparable
@@ -187,8 +193,8 @@ function groupSets(entries) {
   const out = [];
   entries.forEach((e) => {
     const last = out.at(-1);
-    if (last && last.reps === e.reps && last.w === e.w && (last.t ?? null) === (e.t ?? null) && (last.band ?? null) === (e.band ?? null)) last.n += e.n || 1;
-    else out.push({ n: e.n || 1, reps: e.reps, w: e.w, t: e.t ?? null, band: e.band ?? null });
+    if (last && last.reps === e.reps && last.w === e.w && (last.t ?? null) === (e.t ?? null) && (last.band ?? null) === (e.band ?? null) && modText(last.mods) === modText(e.mods)) last.n += e.n || 1;
+    else out.push({ n: e.n || 1, reps: e.reps, w: e.w, t: e.t ?? null, band: e.band ?? null, mods: e.mods?.length ? e.mods : null });
   });
   return out;
 }
@@ -196,7 +202,7 @@ function groupSets(entries) {
 const setText = (g) => {
   const body = g.t != null ? fmtHold(g.t) : String(g.reps);
   const load = g.w ? (g.t != null ? ` @${fmt(g.w)}` : `x${fmt(g.w)}`) : "";
-  return `${g.n > 1 ? g.n + "x" : ""}${body}${load}${g.band ? bandDot(g.band) : ""}`;
+  return `${g.n > 1 ? g.n + "x" : ""}${body}${load}${g.band ? bandDot(g.band) : ""}${modTag(g.mods)}`;
 };
 const fmtHold = (s) => (s < 60 ? `${s}s` : fmtDur(s));
 const bandOf = (name) => db.bands.find((b) => b.name === name);
@@ -204,23 +210,57 @@ const bandDot = (name) => { const b = bandOf(name); return b ? `<i class="band" 
 /** Band cycle for a set: none → lightest → … → strongest → none. */
 const nextBand = (cur) => { const order = ["", ...db.bands.map((b) => b.name)]; return order[(order.indexOf(cur || "") + 1) % order.length]; };
 
+// ----- Variations: per-set modifiers of an exercise (paused, pin, tempo, band, chain…), freely combined -----
+const variationsOf = (name) => exByName(name)?.variations ?? [];
+/** A standard set has no variation; only standard sets count towards PRs, e1RM and test targets. */
+const isStd = (x) => !x?.mods?.length;
+const modText = (mods) => (mods?.length ? mods.join(" + ") : "");
+const modTag = (mods) => (mods?.length ? ` <span class="mods">${esc(modText(mods))}</span>` : "");
+/** Toggles a variation in a set's list, kept in the exercise's own variation order. */
+function toggled(list, v, name) {
+  const order = variationsOf(name), at = (x) => (order.includes(x) ? order.indexOf(x) : 999);
+  const set = new Set(list ?? []);
+  set.has(v) ? set.delete(v) : set.add(v);
+  return [...set].sort((a, b) => at(a) - at(b));
+}
+/** Variation picker under a logging row. src: "m" = the session editor, "w:i" = workout item i. */
+const rowsFor = (src) => (src === "m" ? ui.modal.rows : db.workout.items[+src.slice(2)].rows);
+const nameFor = (src) => (src === "m" ? ui.modal.lift : db.workout.items[+src.slice(2)].exercise);
+const rerender = (src) => (src === "m" ? renderModal() : render());
+function openRowMods(src, j) { const k = `${src}:${j}`; ui.modRow = ui.modRow === k ? null : k; rerender(src); }
+function toggleRowMod(src, j, v) {
+  const r = rowsFor(src)[j];
+  r.mods = toggled(r.mods, v, nameFor(src));
+  if (src !== "m") save();
+  rerender(src);
+}
+
 /** A row from the logging table → a log entry (null when empty). */
 function rowToLog(r, name) {
   const { measure, load } = logType(name);
   const t = measure === "time" ? parseDur(r.t) : null, reps = measure === "time" ? null : parseInt(r.reps);
   if (!(t > 0 || reps > 0)) return null;
-  return { kind: r.kind || "Set", n: 1, reps, t, w: load === "bw" ? 0 : num(r.w) ?? 0, band: load === "kg" ? null : r.band || null };
+  return { kind: r.kind || "Set", n: 1, reps, t, w: load === "bw" ? 0 : num(r.w) ?? 0, band: load === "kg" ? null : r.band || null, ...(r.mods?.length ? { mods: [...r.mods] } : {}) };
 }
-/** Editable set table shared by the workout and the history editor. on(j, field) returns the oninput JS. */
-function setsTable(name, rows, on, onBand, extraCell, rowCls = () => "") {
+/**
+ * Editable set table shared by the workout and the history editor. on(j, field) returns the oninput JS.
+ * src (see rowsFor) adds a variation column when the exercise has variations.
+ */
+function setsTable(name, rows, on, onBand, extraCell, rowCls = () => "", src = null) {
   const { measure, load } = logType(name);
-  return `<table class="log"><tr><th>Set</th><th>${measure === "time" ? "Sec" : "Reps"}</th>${load === "bw" ? "" : `<th></th><th>${load === "bw+" ? "+kg" : "kg"}</th>`}${load === "kg" ? "" : "<th>Band</th>"}<th></th></tr>
+  const vars = variationsOf(name), hasVar = !!src && (vars.length > 0 || rows.some((r) => r.mods?.length));
+  const cols = 3 + (load === "bw" ? 0 : 2) + (load === "kg" ? 0 : 1) + (hasVar ? 1 : 0);
+  const varCell = (r, j) => (hasVar ? `<td><button class="bandbtn varbtn ${r.mods?.length ? "on" : ""}" onclick="openRowMods(${q(src)},${j})">${r.mods?.length ? esc(modText(r.mods)) : "std"}</button></td>` : "");
+  const varRow = (r, j) => (hasVar && ui.modRow === `${src}:${j}` ? `<tr class="var-pick"><td></td><td colspan="${cols - 1}"><div class="row wrap" style="gap:6px">
+      ${[...vars, ...(r.mods ?? []).filter((v) => !vars.includes(v))].map((v) => `<button class="fchip ${r.mods?.includes(v) ? "sel" : ""}" onclick="toggleRowMod(${q(src)},${j},${q(v)})">${esc(v)}</button>`).join("")}
+      <button class="fchip" onclick="openRowMods(${q(src)},${j})">${ic("check")}</button></div></td></tr>` : "");
+  return `<table class="log"><tr><th>Set</th><th>${measure === "time" ? "Sec" : "Reps"}</th>${load === "bw" ? "" : `<th></th><th>${load === "bw+" ? "+kg" : "kg"}</th>`}${load === "kg" ? "" : "<th>Band</th>"}${hasVar ? "<th>Variation</th>" : ""}<th></th></tr>
     ${rows.map((r, j) => `<tr class="${rowCls(r)}"><td class="setno">${j + 1}</td>
       <td>${measure === "time" ? `<input inputmode="numeric" placeholder="sec" value="${esc(r.t ?? "")}" oninput="${on(j, "t")}">`
         : `<input inputmode="numeric" value="${esc(r.reps ?? "")}" oninput="${on(j, "reps")}">`}</td>
       ${load === "bw" ? "" : `<td class="muted">${measure === "time" ? "@" : "×"}</td><td><input inputmode="decimal" value="${esc(r.w ?? "")}" oninput="${on(j, "w")}"></td>`}
       ${load === "kg" ? "" : `<td><button class="bandbtn" onclick="${onBand(j)}">${r.band ? `${bandDot(r.band)}${esc(r.band)}` : "none"}</button></td>`}
-      <td>${extraCell(r, j)}</td></tr>`).join("")}
+      ${varCell(r, j)}<td>${extraCell(r, j)}</td></tr>${varRow(r, j)}`).join("")}
   </table>`;
 }
 
@@ -348,7 +388,8 @@ function generateCycle(cfg, w, nBlocks = 1) {
     block: k + 1, wk: i + 1,
     sets: sets.map((st, j) => {
       const part = partOf(j), lower = Math.ceil(down[part] / STEP - 1e-9) * STEP;
-      return { ...st, w: over[`${part}${k * w + i}`] ?? r25(st.w - lower) };
+      const mods = cfg.mods?.[j]; // the lift's variation for set j, the same every week
+      return { ...st, w: over[`${part}${k * w + i}`] ?? r25(st.w - lower), ...(mods?.length ? { mods: [...mods] } : {}) };
     }),
   })));
 }
@@ -367,7 +408,7 @@ function defaultCfg(lift, model = "tb") {
 // ================= Today's plan for an exercise =================
 function expand(entries) {
   return entries.flatMap((e) => Array.from({ length: Math.max(1, e.n || 1) }, () => ({
-    kind: e.kind, reps: String(e.reps ?? ""), t: e.t ? String(e.t) : "", w: e.w == null || e.w === "" ? "" : fmt(e.w), band: e.band ?? "", done: false,
+    kind: e.kind, reps: String(e.reps ?? ""), t: e.t ? String(e.t) : "", w: e.w == null || e.w === "" ? "" : fmt(e.w), band: e.band ?? "", mods: e.mods ? [...e.mods] : [], done: false,
   })));
 }
 
@@ -386,11 +427,16 @@ function planFor(name, date = today()) {
   return { type: "new", sets: [] };
 }
 
-/** Rows = program set count (or block set count), pre-filled in order from the plan. */
-function buildRows(name, setsText, date) {
+/**
+ * Rows = program set count (or block set count), pre-filled in order from the plan. Variations come from the cycle;
+ * outside a cycle from the split (itemMods: one list per set) when it sets any, else from the last session.
+ */
+function buildRows(name, setsText, date, itemMods = null) {
   const p = planFor(name, date);
   const count = p.type === "block" ? p.sets.length : setCount(setsText);
   const rows = Array.from({ length: count }, (_, i) => ({ ...(p.sets[i] ?? p.sets.at(-1) ?? { kind: "Set", reps: "", w: "" }), done: false }));
+  rows.forEach((r) => (r.mods = [...(r.mods ?? [])]));
+  if (p.type !== "block" && itemMods?.some((m) => m?.length)) rows.forEach((r, i) => (r.mods = [...(itemMods[i] ?? [])]));
   return { rows, plan: p };
 }
 
@@ -490,7 +536,13 @@ function toast(msg) {
   toast.t = setTimeout(() => { ui.toast = null; render(); }, 2500);
 }
 const stat = (label, value) => `<div class="stat"><div class="v">${value}</div><div class="l">${label}</div></div>`;
-const goalText = (sets) => sets.map((s) => `${s.reps}x${s.w || "?"}`).join(" · ");
+const goalText = (sets) => sets.map((s) => `${s.reps}x${s.w || "?"}${s.mods?.length ? ` (${esc(modText(s.mods))})` : ""}`).join(" · ");
+/** "Paused / std / Band + Pin" — a split item's variation per set, or "" when it has none. */
+function itemModsText(it) {
+  if (!it.mods?.some((m) => m?.length)) return "";
+  return Array.from({ length: setCount(it.sets) }, (_, j) => modText(it.mods[j]) || "std").join(" / ");
+}
+const itemModsTag = (it) => (itemModsText(it) ? ` <span class="mods">${esc(itemModsText(it))}</span>` : "");
 
 // ================= HOME =================
 function renderHome() {
@@ -533,7 +585,7 @@ function dayCard(d, i, s) {
   return `<div class="card day ${s.active || s.next ? "next" : ""} ${s.doneOn && !s.active ? "done-day" : ""}">
     <div class="row"><b class="grow" style="font-size:18px">${esc(d.name)}</b>${badge}
       ${s.canMove ? `<button class="btn-t sm" onclick="doNext(${i})">Do next</button>` : ""}</div>
-    <table class="plan">${d.items.map((it) => `<tr><td class="mono muted">${esc(setsLabel(it.sets))}</td><td>${esc(it.label)}</td></tr>`).join("")}</table>
+    <table class="plan">${d.items.map((it) => `<tr><td class="mono muted">${esc(setsLabel(it.sets))}</td><td>${esc(it.label)}${itemModsTag(it)}</td></tr>`).join("")}</table>
     ${goals.length && !s.doneOn ? `<div class="goals">${goals.map(({ ex, p }) => `<div><b>${esc(ex)}</b> <span class="mono">${goalText(p.sets)}</span></div>`).join("")}</div>` : ""}
     ${btn}
   </div>`;
@@ -550,7 +602,8 @@ function startDay(dayIdx) {
       programId: prog.id, dayIdx, date: today(), current: 0, bw: fmt(bwAt()),
       items: prog.days[dayIdx].items.map((it) => {
         const r = resolveItem(it.label, it.pool);
-        return { label: it.label, sets: it.sets, exercise: r.exercise ?? null, options: r.options ?? null, status: "pending", rows: null, planType: null, logIds: [] };
+        const mods = r.exercise && it.mods?.some((m) => m?.length) ? it.mods : null;
+        return { label: it.label, sets: it.sets, exercise: r.exercise ?? null, options: r.options ?? null, mods, status: "pending", rows: null, planType: null, logIds: [] };
       }),
     };
     save();
@@ -561,7 +614,7 @@ function startDay(dayIdx) {
 
 function ensureRows(item) {
   if (item.exercise && !item.rows) {
-    const { rows, plan } = buildRows(item.exercise, item.sets, db.workout.date);
+    const { rows, plan } = buildRows(item.exercise, item.sets, db.workout.date, item.mods);
     item.rows = rows; item.planType = plan.type;
     save();
   }
@@ -617,8 +670,8 @@ function togglePick(name) {
 function applyPick(i) {
   const w = db.workout, it = w.items[i], sel = ui.pick.sel, keep = sel.includes(it.exercise);
   const items = sel.map((name, k) => name === it.exercise ? it
-    : !keep && k === 0 ? Object.assign(it, { exercise: name, rows: null, planType: null })
-    : { label: it.label, sets: it.sets, exercise: name, options: it.options, status: "pending", rows: null, planType: null, logIds: [] });
+    : !keep && k === 0 ? Object.assign(it, { exercise: name, rows: null, planType: null, mods: null })
+    : { label: it.label, sets: it.sets, exercise: name, options: it.options, mods: null, status: "pending", rows: null, planType: null, logIds: [] });
   w.items.splice(i, 1, ...items);
   ui.swap = null; ui.pick = null;
   save(); render();
@@ -632,7 +685,7 @@ function upNextCard(item, i) {
       <div class="ex-name">${esc(item.exercise)}</div></div>
       <button class="btn-o sm" onclick="ui.swap=${i};render()">${ic("swap")} Change</button></div>
     ${setsTable(item.exercise, item.rows, (j, f) => `setRow(${i},${j},'${f}',this.value)`, (j) => `cycleBand(${i},${j})`,
-      (r, j) => `<button class="tick ${r.done ? "on" : ""}" onclick="toggleDone(${i},${j})">${ic("check")}</button>`, (r) => (r.done ? "set-done" : ""))}
+      (r, j) => `<button class="tick ${r.done ? "on" : ""}" onclick="toggleDone(${i},${j})">${ic("check")}</button>`, (r) => (r.done ? "set-done" : ""), `w:${i}`)}
     <div class="row"><button class="btn-t" onclick="addRow(${i})">${ic("plus")} Set</button>
       ${item.rows.length > 1 ? `<button class="btn-t muted" onclick="removeRow(${i})">${ic("minus")} Set</button>` : ""}
       <span class="grow"></span><button class="btn-t" onclick="skipItem(${i})">Skip</button>
@@ -647,10 +700,10 @@ function itemRow(it, i) {
   if (it.status === "skipped") summary = "skipped";
   else if (!it.exercise) summary = "choose exercise";
   else {
-    const rows = it.rows ?? buildRows(it.exercise, it.sets, w.date).rows;
+    const rows = it.rows ?? buildRows(it.exercise, it.sets, w.date, it.mods).rows;
     const shown = it.status === "done" && rows.some((r) => r.done) ? rows.filter((r) => r.done) : rows;
     const logs = shown.map((r) => rowToLog(r, it.exercise)).filter(Boolean);
-    summary = groupSets(logs).map((g) => setText({ ...g, band: null }) + (g.band ? ` ${g.band}` : "")).join(" · ") || (it.status === "done" ? "done" : `${rows.length} sets`);
+    summary = groupSets(logs).map((g) => setText({ ...g, band: null, mods: null }) + (g.band ? ` ${g.band}` : "") + (g.mods ? ` (${modText(g.mods)})` : "")).join(" · ") || (it.status === "done" ? "done" : `${rows.length} sets`);
   }
   return `<div class="item-wrap"><button class="item ${it.status} ${i === w.current ? "cur" : ""}" onclick="focusItem(${i})">
     <span class="st">${icon}</span>
@@ -679,10 +732,10 @@ function openPicker(target) { ui.modal = { type: "addEx", q: "", target }; rende
 function openAddExercise() { openPicker({ mode: "add" }); }
 function addExerciseList() {
   const raw = ui.modal.q.trim(), qText = raw.toLowerCase();
-  const list = db.exercises.filter((e) => !qText || [e.name, e.muscle, e.pattern].some((s) => s.toLowerCase().includes(qText)));
+  const list = db.exercises.filter((e) => !qText || [e.name, ...musclesOf(e), e.pattern].some((s) => s.toLowerCase().includes(qText)));
   const create = `<button class="btn-o" style="text-align:center" onclick="openExercise(null, ui.modal.target, ${q(raw)})">${ic("plus")} Create ${raw && !exByName(raw) ? `“${esc(raw)}”` : "new exercise"}</button>`;
   $("addex-list").innerHTML = (raw && !exByName(raw) ? create : "") + list.map((e) => `<button class="item" onclick="pickExercise(${q(e.name)})">
-    <div class="grow"><div>${esc(e.name)}</div><div class="muted" style="font-size:12px">${esc(e.muscle)} · ${esc(e.pattern)}</div></div><span class="lime">${ic("plus")}</span></button>`).join("")
+    <div class="grow"><div>${esc(e.name)}</div><div class="muted" style="font-size:12px">${esc(e.pattern)} · ${esc(musclesOf(e).join(", "))}</div></div><span class="lime">${ic("plus")}</span></button>`).join("")
     + (raw && !exByName(raw) ? "" : create);
 }
 function pickExercise(name, target = ui.modal.target) {
@@ -715,10 +768,11 @@ function setWorkoutBw(value) {
 function toggleDone(i, j) { const r = db.workout.items[i].rows[j]; r.done = !r.done; save(); render(); }
 function addRow(i) {
   const rows = db.workout.items[i].rows;
-  rows.push({ ...(rows.at(-1) ?? { kind: "Set", reps: "", w: "" }), done: false });
+  const last = rows.at(-1) ?? { kind: "Set", reps: "", w: "" };
+  rows.push({ ...last, mods: [...(last.mods ?? [])], done: false });
   save(); render();
 }
-function removeRow(i) { db.workout.items[i].rows.pop(); save(); render(); }
+function removeRow(i) { db.workout.items[i].rows.pop(); ui.modRow = null; save(); render(); }
 function focusItem(i) {
   db.workout.items[i].status = "pending";
   db.workout.current = i; ui.swap = null; ui.pick = null;
@@ -808,7 +862,7 @@ function renderHistory() {
 function editSession(date) {
   const lift = ui.hist.lift;
   const rows = date ? expand(db.logs.filter((l) => l.lift === lift && l.date === date)) : [{ reps: "", t: "", w: "", band: "" }];
-  ui.modal = { type: "session", lift, orig: date, date: date ?? today(), rows };
+  ui.modal = { type: "session", lift, orig: date, date: date ?? today(), rows }; ui.modRow = null;
   renderModal();
 }
 function saveSession() {
@@ -1154,7 +1208,7 @@ function statsRecords() {
   };
   const main = mainLifts();
   const prs = liftsWithHistory().filter((name) => main.includes(name)).map((name) => {
-    const all = allHistory().filter((h) => h.lift === name && h.reps > 0 && h.w != null);
+    const all = allHistory().filter((h) => h.lift === name && h.reps > 0 && h.w != null && isStd(h));
     // Rep max = heaviest load actually lifted for exactly that many reps (unless corrected by hand); 1 rep = 1RM.
     const repMax = Object.fromEntries(REP_PRS.map((r) => {
       const ov = db.prOverrides[name]?.[r];
@@ -1164,6 +1218,13 @@ function statsRecords() {
   });
   const cls = (pr) => `mono editable ${pr?.edited ? "edited" : ""}`;
   const recs = db.liftRecords.slice().sort((a, b) => a.lift.localeCompare(b.lift) || b.w - a.w);
+  // Best logged set (by e1RM) of each lift + variation combination, kept apart from the standard PRs.
+  const varBest = {};
+  allHistory().filter((h) => !isStd(h) && h.reps > 0 && h.w != null && logType(h.lift).measure === "reps").forEach((h) => {
+    const key = `${h.lift}|${modText(h.mods)}`, e1 = Rpe.oneRm(h.w, h.reps, 10, bwOf(h.lift, h.date));
+    if (!varBest[key] || e1 > varBest[key].e1) varBest[key] = { h, e1 };
+  });
+  const vb = Object.values(varBest).sort((a, b) => a.h.lift.localeCompare(b.h.lift) || modText(a.h.mods).localeCompare(modText(b.h.mods)));
   return `
     <div class="card" style="padding:8px"><div class="title" style="padding:6px">1RM · heaviest single</div>
       <table class="hist"><tr><th>Lift</th><th>1RM</th><th>BW</th><th>Date</th></tr>
@@ -1177,6 +1238,11 @@ function statsRecords() {
       ${prs.map((p) => `<tr><td><b>${esc(p.name)}</b></td>${REP_PRS.map((r) =>
         `<td class="${cls(p.repMax[r])}" onclick="editPr(${q(p.name)},${r})" title="${p.repMax[r]?.date ? dmy(p.repMax[r].date) : ""}">${p.repMax[r] ? fmt(p.repMax[r].w) : "–"}</td>`).join("")}</tr>`).join("")}
       </table></div>
+    ${vb.length ? `<div class="card" style="padding:8px"><div class="title" style="padding:6px">Variation bests · from logged sets</div>
+      <table class="hist"><tr><th>Lift</th><th>Best set</th><th>e1RM</th><th>Date</th></tr>
+      ${vb.map(({ h, e1 }) => `<tr><td><b>${esc(h.lift)}</b><div class="muted">${esc(modText(h.mods))}</div></td><td class="mono lime">${h.reps}x${fmt(h.w)}</td>
+        <td class="mono">${fmt(Math.round(e1 * 10) / 10)}</td><td class="mono muted">${dmy(h.date)}</td></tr>`).join("")}
+      </table><div class="muted" style="padding:6px">Sets with a variation (paused, pins, bands, chains…) don't count towards the standard PRs above.</div></div>` : ""}
     <div class="card col"><div class="title">Variations & other lifts</div>
       ${recs.length ? `<table class="hist"><tr><th>Lift</th><th>Set</th><th>Date</th><th></th></tr>
         ${recs.map((r) => `<tr><td><b>${esc(r.lift)}</b>${r.variant ? `<div class="muted">${esc(r.variant)}</div>` : ""}</td>
@@ -1225,7 +1291,7 @@ function renderPrograms() {
         <div class="grow"><b>${esc(p.name)}</b> ${isCur ? '<span class="badge">CURRENT</span>' : ""}
           <div class="muted">${p.days.length}-day split</div></div><span>${chev(open)}</span></div>
       ${open ? `<div class="days">${p.days.map((d) => `<div class="pday"><b>${esc(d.name)}</b>
-          ${d.items.map((it) => `<div><span class="mono muted">${esc(setsLabel(it.sets))}</span> ${esc(it.label)}</div>`).join("")}</div>`).join("")}</div>
+          ${d.items.map((it) => `<div><span class="mono muted">${esc(setsLabel(it.sets))}</span> ${esc(it.label)}${itemModsTag(it)}</div>`).join("")}</div>`).join("")}</div>
         <div class="row">${isCur ? "" : `<button class="btn" onclick="makeCurrent(${p.id})">Make current</button>`}
           <span class="grow"></span><button class="btn-t" onclick="openProgramBuilder(${p.id})">Edit</button>
           ${isCur ? "" : `<button class="btn-t red" onclick="deleteProgram(${p.id})">Delete</button>`}</div>` : ""}
@@ -1260,17 +1326,34 @@ function renderProgramBuilder() {
       <div class="row"><input value="${esc(d.name)}" onchange="ui.pb.days[${di}].name=this.value" style="font-weight:700">
         ${pb.days.length > 1 ? `<button class="icon" onclick="ui.pb.days.splice(${di},1);render()">${ic("trash")}</button>` : ""}</div>
       ${d.items.map((it, k) => `<div class="row">
-        <input class="sets-in" inputmode="numeric" value="${esc(String(it.sets).replace(/x$/i, ""))}" onchange="ui.pb.days[${di}].items[${k}].sets=this.value" title="Sets">
+        <input class="sets-in" inputmode="numeric" value="${esc(String(it.sets).replace(/x$/i, ""))}" onchange="ui.pb.days[${di}].items[${k}].sets=this.value;render()" title="Sets">
         <span class="muted">×</span>
         <select onchange="setPbLabel(${di},${k},this.value)">${exerciseOptions(it.label)}</select>
-        <button class="icon" onclick="ui.pb.days[${di}].items.splice(${k},1);render()">${ic("x")}</button></div>${SLOTS[it.label] ? poolPicker(it, di, k) : ""}`).join("")}
+        <button class="icon" onclick="ui.pb.days[${di}].items.splice(${k},1);render()">${ic("x")}</button></div>${SLOTS[it.label] ? poolPicker(it, di, k) : modPicker(it, di, k)}`).join("")}
       <button class="btn-t" onclick="ui.pb.days[${di}].items.push({sets:'3',label:'Leg isolation'});render()">${ic("plus")} Exercise</button>
     </div>`).join("")}
     <button class="btn-o" style="text-align:center" onclick="ui.pb.days.push({name:'Day ${pb.days.length + 1}',items:[]});render()">${ic("plus")} Add day</button>
     <label class="chk-item"><input type="checkbox" ${pb.makeCurrent ? "checked" : ""} onchange="ui.pb.makeCurrent=this.checked"> Set as current split</label>
     <button class="btn" onclick="saveProgram()">Save split</button>`;
 }
-function setPbLabel(di, k, label) { const it = ui.pb.days[di].items[k]; it.label = label; delete it.pool; render(); }
+function setPbLabel(di, k, label) { const it = ui.pb.days[di].items[k]; it.label = label; delete it.pool; delete it.mods; render(); }
+/** Under an exercise with variations: which variation each set uses (combine freely; none = standard). */
+function modPicker(it, di, k) {
+  const vars = variationsOf(it.label);
+  if (!vars.length) return "";
+  const key = `m${di}-${k}`, open = ui.pbPool === key;
+  return `<button class="btn-t sm pool-btn" onclick="ui.pbPool=${open ? "null" : q(key)};render()">Variations · ${esc(itemModsText(it) || "standard")} ${chev(open)}</button>
+    ${open ? `<div class="pool col">${Array.from({ length: setCount(it.sets) }, (_, j) => `<div class="row wrap" style="gap:6px"><span class="muted" style="width:44px">Set ${j + 1}</span>
+      ${vars.map((v) => `<button class="fchip ${it.mods?.[j]?.includes(v) ? "sel" : ""}" onclick="togglePbMod(${di},${k},${j},${q(v)})">${esc(v)}</button>`).join("")}</div>`).join("")}
+      <div class="muted">Used when no cycle plans this exercise. Variation sets don't count towards standard PRs.</div></div>` : ""}`;
+}
+function togglePbMod(di, k, j, v) {
+  const it = ui.pb.days[di].items[k];
+  it.mods = Array.from({ length: Math.max(setCount(it.sets), it.mods?.length ?? 0) }, (_, x) => it.mods?.[x] ?? []);
+  it.mods[j] = toggled(it.mods[j], v, it.label);
+  if (!it.mods.some((m) => m.length)) delete it.mods;
+  render();
+}
 /** A placeholder's default exercises: its own pick (any exercise) or, when none, every exercise matching the slot. */
 const poolOf = (it) => resolveItem(it.label, it.pool).options;
 /** Under a placeholder: which exercises show up as buttons on the day; "Choose any" adds others from the library. */
@@ -1316,7 +1399,7 @@ function renderBlocks() {
   }
   const act = activeBlock();
   const past = db.blocks.filter((b) => !b.active).slice().reverse();
-  setTop("Cycles", "Periodization for main lifts", `<button class="btn sm" onclick="openBlockBuilder()">${ic("plus")} New cycle</button>${SETTINGS_BTN}`);
+  setTop("Cycles", "Periodization", `<button class="btn sm" onclick="openBlockBuilder()">${ic("plus")} New cycle</button>${SETTINGS_BTN}`);
   $("main").innerHTML = `${segTabs([["strength", "Strength"], ["running", "Running"]], tab, "blockTab")}
     ${act ? blockCard(act) : `<div class="card muted">No active cycle. Workouts are pre-filled from your last session.</div>`}
     ${past.length ? pastToggle("pastBlocksOpen", "Previous cycles", past.length) + (ui.pastBlocksOpen ? past.map(blockCard).join("") : "") : ""}
@@ -1348,7 +1431,7 @@ function testWeek(lift, target, bw = exByName(lift)?.bw ? BW_FACTOR * bwAt() : 0
 }
 /** Default test target: the higher of the block's 1RM and the heaviest single ever logged. */
 const defaultTestTarget = (cfg) =>
-  r25(Math.max(num(cfg.oneRm) || 0, ...allHistory().filter((h) => h.lift === cfg.lift && h.reps === 1).map((h) => h.w)));
+  r25(Math.max(num(cfg.oneRm) || 0, ...allHistory().filter((h) => h.lift === cfg.lift && h.reps === 1 && isStd(h)).map((h) => h.w)));
 const hasTest = (b) => b.lifts.some((l) => l.plan.at(-1)?.test);
 function addTestWeek(id) {
   const b = db.blocks.find((x) => x.id === id);
@@ -1401,10 +1484,16 @@ function planTable(cfg, plan, curWeek = 0, editIdx = null, testEdit = null) {
     }
     const top = wk.sets[0], bo = wk.sets.filter((s) => s.kind === "Back-off");
     return `<tr class="${cls}"><td>${label}</td>
-      ${tb ? `<td class="mono">${top.reps}x${kg("T", i, top.w)}</td><td class="mono muted">${pct(top.w)}</td>
-             <td class="mono">${bo.length ? `${bo.length}x${bo[0].reps}x${kg("B", i, bo[0].w)}` : "–"}</td><td class="mono muted">${bo.length ? pct(bo[0].w) : ""}</td>`
-        : `<td class="mono">${wk.sets.length}x${top.reps}x${kg("T", i, top.w)}</td><td class="mono muted">${pct(top.w)}</td>`}</tr>`;
+      ${tb ? `<td class="mono">${top.reps}x${kg("T", i, top.w)}${modsLine([top])}</td><td class="mono muted">${pct(top.w)}</td>
+             <td class="mono">${bo.length ? `${bo.length}x${bo[0].reps}x${kg("B", i, bo[0].w)}` : "–"}${modsLine(bo)}</td><td class="mono muted">${bo.length ? pct(bo[0].w) : ""}</td>`
+        : `<td class="mono">${wk.sets.length}x${top.reps}x${kg("T", i, top.w)}${modsLine(wk.sets)}</td><td class="mono muted">${pct(top.w)}</td>`}</tr>`;
   }
+}
+/** Variations of a group of sets: one label when they all match, else per set ("std / Band / Band + Pin"). */
+function modsLine(sets) {
+  if (!sets.some((x) => x.mods?.length)) return "";
+  const texts = sets.map((x) => modText(x.mods) || "std");
+  return `<div class="mods">${esc(texts.every((t) => t === texts[0]) ? texts[0] : texts.join(" / "))}</div>`;
 }
 function setOverride(idx, part, week, value) {
   const cfg = ui.be.lifts[idx], v = num(value);
@@ -1469,7 +1558,11 @@ function openBlockBuilder(copyId) {
 }
 function renderBlockBuilder() {
   const be = ui.be, n = parseInt(be.weeks) || 0, nb = builderBlocks(), total = n * nb + (be.test ? 1 : 0);
-  const unused = mainLifts().filter((l) => !be.lifts.some((c) => c.lift === l));
+  // Main lifts by default; "Show all exercises" offers every exercise that is logged with a weight.
+  const free = (e) => !be.lifts.some((c) => c.lift === e.name);
+  const mainFree = db.exercises.filter((e) => e.main && free(e));
+  const others = be.allEx ? PATTERNS.map((p) => [p, db.exercises.filter((e) => !e.main && free(e) && e.pattern === p && e.measure !== "time" && e.load !== "bw")]).filter(([, l]) => l.length) : [];
+  const opts = (l) => l.map((e) => `<option>${esc(e.name)}</option>`).join("");
   setTop("New cycle", "Add lifts, preview, then save & activate", `<button class="icon" onclick="ui.be=null;render()">${ic("x")}</button>`);
   $("main").innerHTML = `
     <div class="card col">
@@ -1483,8 +1576,10 @@ function renderBlockBuilder() {
     <div class="card col"><div class="title">① Weekly scheme · inside every block</div>${schemeFields(be.def, "ui.be.def")}</div>
     ${n > 0 && be.lifts.length ? cycleCard(n, nb) : ""}
     ${be.lifts.map((c, i) => liftEditor(c, i, n)).join("")}
-    ${unused.length ? `<select onchange="if(this.value){ui.be.lifts.push({...defaultCfg(this.value),own:false});render()}">
-      <option value="">Add main lift…</option>${unused.map((l) => `<option>${esc(l)}</option>`).join("")}</select>` : ""}
+    ${mainFree.length || others.length ? `<select onchange="if(this.value){ui.be.lifts.push({...defaultCfg(this.value),own:false});render()}">
+      <option value="">${be.allEx ? "Add exercise…" : "Add main lift…"}</option>
+      ${be.allEx ? `${mainFree.length ? `<optgroup label="Main lifts">${opts(mainFree)}</optgroup>` : ""}${others.map(([p, l]) => `<optgroup label="${esc(p)}">${opts(l)}</optgroup>`).join("")}` : opts(mainFree)}</select>` : ""}
+    <label class="chk-item"><input type="checkbox" ${be.allEx ? "checked" : ""} onchange="ui.be.allEx=this.checked;render()"> Show all exercises, not only main lifts</label>
     <button class="btn" onclick="saveBlock()">Save & set active</button>`;
 }
 const CYCLE_LOAD = { pct: ["% of 1RM", "+% of 1RM / block", "5"], rpe: ["RPE", "+RPE / block", "0.5"], kg: ["kg", "+kg / block", "10"] };
@@ -1576,9 +1671,29 @@ function liftEditor(c, i, n) {
     ${c.own ? schemeFields(c, path) : `<div class="muted">${modelLabel(eff)} · top ${d > 0 ? "+" : ""}${fmt(d)} reps / week${eff.model === "tb" ? ` · back-off ${eff.boR0}→${eff.boR1} reps` : ""}</div>`}
     <div class="row">${f("1RM kg", "oneRm")}${eff.method === "kg" ? f("Start kg", "kgT0") : ""}</div>
     ${exByName(c.lift)?.bw ? `<div class="row">${f("Bodyweight kg", "bw")}<div class="muted grow">1RM is added load: (0.9·BW + kg) × % − 0.9·BW</div></div>` : ""}
+    ${n > 0 ? cycleModPicker(c, i, eff, n) : ""}
     ${n > 0 ? planTable(eff, builderPlan(eff, n), 0, i, `${path}.testMax=this.value;render()`) : ""}
     ${n > 0 ? `<div class="muted">Tap a weight to set it yourself.</div>` : ""}
   </div>`;
+}
+/** Variation per set of a week (top, back-offs) for a lift that has variations; every week of the cycle uses it. */
+function cycleModPicker(c, i, eff, n) {
+  const vars = [...new Set([...variationsOf(c.lift), ...Object.values(c.mods ?? {}).flat()])], sets = generateLift(eff, n)[0]?.sets ?? [];
+  if (!vars.length || !sets.length) return "";
+  const label = (j) => (eff.model === "drop" ? `Set ${j + 1}` : j === 0 ? "Top" : `Back-off ${j}`);
+  const open = ui.be.modOpen === i, summary = sets.map((_, j) => modText(c.mods?.[j]) || "std");
+  const head = `<button class="btn-t sm pool-btn" onclick="ui.be.modOpen=${open ? "null" : i};render()">Variations · ${esc(summary.some((t) => t !== "std") ? summary.join(" / ") : "standard")} ${chev(open)}</button>`;
+  if (!open) return head;
+  return `${head}<div class="muted">Variation per set · every week (none = standard)</div>
+    ${sets.map((_, j) => `<div class="row wrap" style="gap:6px"><span class="muted" style="width:72px">${label(j)}</span>
+      ${vars.map((v) => `<button class="fchip ${c.mods?.[j]?.includes(v) ? "sel" : ""}" onclick="toggleCycleMod(${i},${j},${q(v)})">${esc(v)}</button>`).join("")}</div>`).join("")}`;
+}
+function toggleCycleMod(i, j, v) {
+  const c = ui.be.lifts[i];
+  c.mods ||= {};
+  c.mods[j] = toggled(c.mods[j], v, c.lift);
+  if (!c.mods[j].length) delete c.mods[j];
+  render();
 }
 function toggleOwnScheme(i, on) {
   const c = ui.be.lifts[i];
@@ -1622,7 +1737,7 @@ function renderExercises() {
   const counts = {};
   allHistory().forEach((h) => (counts[h.lift] = (counts[h.lift] || 0) + 1));
   const list = db.exercises.filter((e) => (ui.exPattern === "All" || (ui.exPattern === "Main lifts" ? e.main : e.pattern === ui.exPattern)) &&
-    (!qText || [e.name, e.muscle, e.pattern].some((s) => s.toLowerCase().includes(qText))));
+    (!qText || [e.name, ...musclesOf(e), e.pattern, ...(e.variations ?? [])].some((s) => s.toLowerCase().includes(qText))));
   const groups = PATTERNS.filter((p) => list.some((e) => e.pattern === p));
   setTop("Exercises", `${db.exercises.length} exercises`, `<button class="btn sm" onclick="openExercise()">${ic("plus")} Add</button>${SETTINGS_BTN}`);
   $("main").innerHTML = `${progToggle()}
@@ -1631,7 +1746,8 @@ function renderExercises() {
     ${groups.map((g) => `<div class="title">${g}</div>${list.filter((e) => e.pattern === g).map((e) => `
       <div class="card ex-row" onclick="openExercise(${e.id})">
         <div class="grow"><b>${esc(e.name)}</b>${e.main ? ' <span class="badge">MAIN</span>' : ""}${e.custom ? ' <span class="badge sm">custom</span>' : ""}
-          <div class="tags"><span>${esc(e.muscle)}</span><span>${esc(e.mechanic)}</span>${e.load && e.load !== "kg" ? `<span>${e.load === "bw" ? "Bodyweight" : "BW + kg"}</span>` : ""}${e.measure === "time" ? "<span>Hold</span>" : ""}</div></div>
+          <div class="tags">${musclesOf(e).map((m, k) => `<span class="${k ? "sec" : ""}">${esc(m)}</span>`).join("")}<span>${esc(e.mechanic)}</span>${e.load && e.load !== "kg" ? `<span>${e.load === "bw" ? "Bodyweight" : "BW + kg"}</span>` : ""}${e.measure === "time" ? "<span>Hold</span>" : ""}</div>
+          ${e.variations?.length ? `<div class="mods">Variations: ${esc(e.variations.join(", "))}</div>` : ""}</div>
         ${counts[e.name] ? `<span class="muted">${counts[e.name]} sets</span>` : ""}
       </div>`).join("")}`).join("")}`;
 }
@@ -1641,18 +1757,41 @@ function searchExercises() {
   const el = $("ex-search"); el.focus(); el.setSelectionRange(pos, pos);
 }
 /** after: a picker target (see openPicker) that receives the new exercise once it is saved. */
+/** Muscle groups of an exercise, primary first. */
+const musclesOf = (e) => (e.muscles?.length ? e.muscles : [e.muscle].filter(Boolean));
 function openExercise(id, after, name = "") {
   const e = id ? db.exercises.find((x) => x.id === id) : { name, muscle: "Chest", pattern: "Horizontal Push", mechanic: "Compound", measure: "reps", load: "kg", bw: false, main: false, custom: true };
-  ui.modal = { type: "exercise", e: { ...e }, after };
+  ui.modal = { type: "exercise", e: { ...e, muscles: [...musclesOf(e)], variations: [...(e.variations ?? [])] }, after };
   renderModal();
 }
+/** A new pattern keeps only the muscle groups that pattern can train. */
+function setExPattern(p) {
+  const e = ui.modal.e, ok = PATTERN_MUSCLES[p] ?? MUSCLES;
+  e.pattern = p; e.muscles = e.muscles.filter((m) => ok.includes(m));
+  renderModal();
+}
+/** First muscle picked is the primary one; tapping a picked muscle removes it. */
+function toggleExMuscle(m) {
+  const list = ui.modal.e.muscles, k = list.indexOf(m);
+  k >= 0 ? list.splice(k, 1) : list.push(m);
+  renderModal();
+}
+function makePrimary(m) { const e = ui.modal.e; e.muscles = [m, ...e.muscles.filter((x) => x !== m)]; renderModal(); }
+function addExVariation() {
+  const e = ui.modal.e, v = $("exm-var").value.trim();
+  if (!v) return;
+  if (!e.variations.some((x) => x.toLowerCase() === v.toLowerCase())) e.variations.push(v);
+  renderModal();
+  $("exm-var")?.focus();
+}
+function removeExVariation(k) { ui.modal.e.variations.splice(k, 1); renderModal(); }
 function saveExercise() {
   const e = ui.modal.e;
-  e.name = $("exm-name").value.trim();
-  e.muscle = $("exm-muscle").value; e.pattern = $("exm-pattern").value; e.mechanic = $("exm-mech").value;
-  e.measure = $("exm-measure").value; e.load = $("exm-load").value;
-  e.bw = e.load !== "kg"; e.main = $("exm-main").checked;
+  e.name = String(e.name ?? "").trim();
+  e.bw = e.load !== "kg";
   if (!e.name) return alert("Name is required.");
+  if (!e.muscles.length) return alert("Pick at least one muscle group.");
+  e.muscle = e.muscles[0];
   if (db.exercises.some((x) => x.name.toLowerCase() === e.name.toLowerCase() && x.id !== e.id)) return alert("An exercise with that name already exists.");
   if (e.id) Object.assign(db.exercises.find((x) => x.id === e.id), e);
   else db.exercises.push({ ...e, id: nextId(), custom: true });
@@ -1840,7 +1979,7 @@ function renderModal() {
       <h2>${esc(m.lift)}</h2>
       <label class="f">Date<input type="date" value="${m.date}" onchange="ui.modal.date=this.value"></label>
       ${setsTable(m.lift, m.rows, (j, f) => `ui.modal.rows[${j}].${f}=this.value`, (j) => `ui.modal.rows[${j}].band=nextBand(ui.modal.rows[${j}].band);renderModal()`,
-        (r, j) => `<button class="icon" onclick="ui.modal.rows.splice(${j},1);renderModal()">${ic("x")}</button>`)}
+        (r, j) => `<button class="icon" onclick="ui.modal.rows.splice(${j},1);ui.modRow=null;renderModal()">${ic("x")}</button>`, () => "", "m")}
       <button class="btn-t" style="align-self:flex-start" onclick="ui.modal.rows.push({...(ui.modal.rows.at(-1) ?? {reps:'',t:'',w:'',band:''})});renderModal()">${ic("plus")} Set</button>
       <div class="row">${m.orig ? `<button class="btn-t red" onclick="deleteSession()">Delete</button>` : ""}<span class="grow"></span>
         <button class="btn-t" onclick="ui.modal=null;render()">Cancel</button><button class="btn" onclick="saveSession()">Save</button></div></div>`;
@@ -1869,18 +2008,34 @@ function renderModal() {
     return;
   }
   const e = m.e, locked = e.id && sessionsOf(e.name).length > 0;
-  const sel = (id, opts, v) => `<select id="${id}">${opts.map((o) => `<option ${o === v ? "selected" : ""}>${o}</option>`).join("")}</select>`;
-  const pairs = (id, opts, v) => `<select id="${id}">${opts.map(([k, l]) => `<option value="${k}" ${k === v ? "selected" : ""}>${l}</option>`).join("")}</select>`;
+  // Every field writes straight into ui.modal.e, so re-rendering (pattern, muscles, variations) keeps what was typed.
+  const bind = (key) => `onchange="ui.modal.e.${key}=this.value"`;
+  const sel = (key, opts, v, on = bind(key)) => `<select ${on}>${opts.map((o) => `<option ${o === v ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
+  const pairs = (key, opts, v) => `<select ${bind(key)}>${opts.map(([k, l]) => `<option value="${k}" ${k === v ? "selected" : ""}>${l}</option>`).join("")}</select>`;
+  const allowed = PATTERN_MUSCLES[e.pattern] ?? MUSCLES;
+  const shown = [...allowed, ...e.muscles.filter((x) => !allowed.includes(x))];
   $("modal").innerHTML = `<div class="scrim" onclick="ui.modal=null;render()"></div><div class="dialog">
     <h2>${e.id ? "Edit exercise" : "New exercise"}</h2>
-    <label class="f">Name<input id="exm-name" value="${esc(e.name)}" ${locked ? "disabled" : ""}></label>
-    <label class="f">Muscle group${sel("exm-muscle", MUSCLES, e.muscle)}</label>
-    <label class="f">Movement pattern${sel("exm-pattern", PATTERNS, e.pattern)}</label>
-    <label class="f">Type${sel("exm-mech", MECHANICS, e.mechanic)}</label>
-    <div class="row"><label class="f">Logged as${pairs("exm-measure", MEASURES, e.measure ?? "reps")}</label>
-      <label class="f">Load${pairs("exm-load", LOADS, e.load ?? "kg")}</label></div>
+    <label class="f">Name<input value="${esc(e.name)}" oninput="ui.modal.e.name=this.value" ${locked ? "disabled" : ""}></label>
+    <label class="f">Movement pattern${sel("pattern", PATTERNS, e.pattern, `onchange="setExPattern(this.value)"`)}</label>
+    <div class="f-label">Muscle groups · first is primary, the rest secondary</div>
+    <div class="opt-list">${shown.map((o) => {
+      const k = e.muscles.indexOf(o);
+      return `<button class="fchip ${k >= 0 ? "sel" : ""}" onclick="toggleExMuscle(${q(o)})">${k === 0 ? "<b>Primary</b> " : k > 0 ? `<b>${k + 1}</b> ` : ""}${esc(o)}</button>`;
+    }).join("")}</div>
+    ${e.muscles.length > 1 ? `<div class="row wrap" style="gap:6px"><span class="muted">Make primary:</span>${e.muscles.slice(1).map((o) =>
+      `<button class="btn-t sm" onclick="makePrimary(${q(o)})">${esc(o)}</button>`).join("")}</div>` : ""}
+    <label class="f">Type${sel("mechanic", MECHANICS, e.mechanic)}</label>
+    <div class="row"><label class="f">Logged as${pairs("measure", MEASURES, e.measure ?? "reps")}</label>
+      <label class="f">Load${pairs("load", LOADS, e.load ?? "kg")}</label></div>
     <div class="muted">Bodyweight exercises can be logged with a resistance band.</div>
-    <label class="chk-item"><input type="checkbox" id="exm-main" ${e.main ? "checked" : ""}> Main lift (can be periodized in Cycles)</label>
+    <label class="chk-item"><input type="checkbox" ${e.main ? "checked" : ""} onchange="ui.modal.e.main=this.checked"> Main lift (shown first in Cycles and PRs)</label>
+    <div class="f-label">Variations · e.g. paused, pin, tempo, band, chain</div>
+    ${e.variations.length ? `<div class="opt-list">${e.variations.map((v, k) =>
+      `<button class="fchip sel" onclick="removeExVariation(${k})" title="Remove">${esc(v)} ${ic("x")}</button>`).join("")}</div>` : ""}
+    <div class="row"><input id="exm-var" placeholder="New variation" onkeydown="if(event.key==='Enter')addExVariation()">
+      <button class="btn-o sm" onclick="addExVariation()">${ic("plus")} Add</button></div>
+    <div class="muted">Each set can use any mix of variations (or none). Variation sets don't count towards standard PRs.</div>
     ${locked ? `<div class="muted">Name locked: this exercise has history.</div>` : ""}
     <div class="row">${e.custom && e.id ? `<button class="btn-t red" onclick="deleteExercise()">Delete</button>` : ""}<span class="grow"></span>
       <button class="btn-t" onclick="ui.modal=null;render()">Cancel</button><button class="btn" onclick="saveExercise()">Save</button></div></div>`;

@@ -182,3 +182,12 @@ table.hist.fit td, table.hist.fit th { padding: 5px 3px; }
 .pool { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 6px 64px; }
 .pool-btn { margin-left: 64px; align-self: flex-start; }
 tr.blk-row td { color: var(--t2); font-weight: 600; padding-top: 8px; }
+/* Variations (paused, pin, band, …) on sets and split items */
+.mods { font-size: 11px; color: var(--t2); font-weight: 400; font-family: inherit; }
+span.mods { margin-left: 2px; }
+.varbtn { max-width: 96px; white-space: normal; line-height: 1.2; }
+.varbtn.on { color: var(--lime); border-color: var(--pb); }
+tr.var-pick td { padding-bottom: 8px; }
+.tags span.sec { background: none; border: 1px solid var(--sx); }
+.f-label { font-size: 11px; color: var(--t2); }
+.fchip .ic { width: 12px; height: 12px; vertical-align: -1px; }

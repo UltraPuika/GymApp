@@ -43,7 +43,42 @@ const MUSCLES = [
   "Quads", "Hamstrings", "Glutes", "Adductors", "Abductors", "Calves", "Chest", "Upper Chest", "Lats", "Upper Back",
   "Traps", "Shoulders", "Side Delts", "Rear Delts", "Biceps", "Triceps", "Forearms", "Core", "Rotator Cuff", "Full Body",
 ];
-const MECHANICS = ["Compound", "Isolation", "Skill", "Prehab"];
+/** Muscle groups each movement pattern can train — the exercise editor only offers these for the chosen pattern. */
+const PATTERN_MUSCLES = {
+  "Squat": ["Quads", "Glutes", "Adductors", "Hamstrings", "Calves", "Core", "Full Body"],
+  "Hinge": ["Hamstrings", "Glutes", "Adductors", "Upper Back", "Traps", "Lats", "Forearms", "Core", "Full Body"],
+  "Lunge": ["Quads", "Glutes", "Adductors", "Abductors", "Hamstrings", "Calves", "Core"],
+  "Horizontal Push": ["Chest", "Upper Chest", "Shoulders", "Triceps", "Core"],
+  "Vertical Push": ["Shoulders", "Side Delts", "Upper Chest", "Triceps", "Traps", "Core"],
+  "Horizontal Pull": ["Upper Back", "Lats", "Rear Delts", "Traps", "Biceps", "Forearms", "Core"],
+  "Vertical Pull": ["Lats", "Upper Back", "Biceps", "Rear Delts", "Forearms", "Core"],
+  "Leg Isolation": ["Quads", "Hamstrings", "Glutes", "Adductors", "Abductors", "Calves"],
+  "Upper Isolation": ["Chest", "Upper Chest", "Shoulders", "Side Delts", "Rear Delts", "Traps", "Lats", "Upper Back"],
+  "Arms": ["Biceps", "Triceps", "Forearms"],
+  "Grip": ["Forearms", "Traps"],
+  "Core": ["Core"],
+  "Skill": ["Shoulders", "Chest", "Lats", "Upper Back", "Triceps", "Biceps", "Forearms", "Core", "Full Body"],
+  "Prehab": ["Rotator Cuff", "Rear Delts", "Shoulders", "Upper Back", "Traps", "Core"],
+};
+/** Secondary muscles of catalogue exercises (the primary one is in CATALOG). */
+const SECONDARY_MUSCLES = {
+  "Squat": ["Glutes", "Adductors"], "Front Squat": ["Glutes", "Core"], "Deadlift": ["Glutes", "Upper Back", "Forearms"],
+  "Overhand Deadlift": ["Glutes", "Forearms"], "Romanian Deadlift": ["Glutes"], "Hip Thrust": ["Hamstrings"],
+  "Bench Press": ["Triceps", "Shoulders"], "Close-Grip Bench Press": ["Chest"], "Incline Bench Press": ["Shoulders", "Triceps"],
+  "Overhead Press": ["Triceps", "Upper Chest"], "Pull-ups": ["Biceps", "Upper Back"], "Lat Pulldown": ["Biceps"],
+  "Barbell Row": ["Lats", "Biceps", "Rear Delts"], "Bulgarian Split Squat": ["Glutes"], "Lunges": ["Quads"],
+};
+/** Starting variations for the main lifts; any exercise can get its own in Exercises. Sets can combine several. */
+const DEFAULT_VARIATIONS = {
+  "Squat": ["Paused", "Pin", "Tempo", "Band", "Chain"],
+  "Bench Press": ["Paused", "Pin", "Tempo", "Band", "Chain"],
+  "Deadlift": ["Paused", "Deficit", "Block", "Band", "Chain"],
+  "Overhand Deadlift": ["Paused", "Deficit", "Block"],
+  "Overhead Press": ["Paused", "Pin", "Tempo"],
+  "Barbell Row": ["Paused", "Tempo"],
+  "Pull-ups": ["Paused", "Tempo"],
+};
+const MECHANICS =["Compound", "Isolation", "Skill", "Prehab"];
 const DEFAULT_MAIN_LIFTS = ["Squat", "Bench Press", "Deadlift", "Overhand Deadlift", "Overhead Press", "Pull-ups", "Barbell Row"];
 
 // [name, primary muscle, movement pattern, mechanic, bodyweight-loaded, plate increment kg]
