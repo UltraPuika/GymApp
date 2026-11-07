@@ -191,3 +191,17 @@ tr.var-pick td { padding-bottom: 8px; }
 .tags span.sec { background: none; border: 1px solid var(--sx); }
 .f-label { font-size: 11px; color: var(--t2); }
 .fchip .ic { width: 12px; height: 12px; vertical-align: -1px; }
+/* Cycle builder template editor */
+.steps button:disabled { opacity: .4; }
+.twk { border-top: 1px solid var(--sx); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.tg-row { display: flex; align-items: center; gap: 4px; }
+.tg-row input { width: 40px; padding: 7px 2px; text-align: center; font-family: Consolas, monospace; font-weight: 700; font-size: 14px; flex-shrink: 0; }
+.tg-row input.l-in { width: 50px; }
+.tg-row .u { font-size: 11px; min-width: 22px; }
+.tg-row .varbtn { margin-left: auto; max-width: 84px; }
+.tg-row .icon { padding: 4px; }
+.kindbtn { background: var(--sx); border: 0; color: var(--t2); border-radius: 8px; padding: 6px 4px; font-size: 11px; width: 58px; flex-shrink: 0; }
+.tg-vars { gap: 6px; padding-left: 62px; }
+.gform { border: 1px solid var(--pb); border-radius: 12px; padding: 10px; gap: 8px; }
+.wline { min-height: 30px; display: flex; align-items: center; gap: 2px; flex-wrap: wrap; }
+label.f.one-f { flex: 0 1 96px; }
