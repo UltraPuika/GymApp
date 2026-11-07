@@ -209,3 +209,7 @@ label.f.one-f { flex: 0 1 96px; }
 .vline { border: 1px solid var(--sx); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
 .vline.off b { color: var(--t2); text-decoration: line-through; }
 .fchip:disabled { opacity: .4; }
+.bvars { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--sx); border-radius: 10px; }
+.bv-name { font-size: 12px; font-weight: 600; width: 62px; }
+.tg-mods { margin-left: auto; font-size: 11px; color: var(--lime); max-width: 70px; line-height: 1.2; text-align: right; }
+.vblock { gap: 6px; }

@@ -1552,22 +1552,23 @@ const usersOf = (s) => (s == null ? ui.be.lifts.filter((L) => !L.custom) : [ui.b
 const structChanged = (s) => usersOf(s).forEach((L) => (L.over = {}));
 /** A set line across the template: its kind and variation (e.g. "Back-off|Band"). */
 const lineKey = (g) => `${g.kind}|${modText(g.mods)}`;
-/** Set lines of a template in order of first appearance. */
-function tmplLines(t) {
+/** Set lines of one block (or the whole template) in order of first appearance. */
+function tmplLines(t, bi = null) {
   const m = new Map();
-  t.blocks.forEach((b) => b.weeks.forEach((w) => w.groups.forEach((g) => { if (!m.has(lineKey(g))) m.set(lineKey(g), { key: lineKey(g), kind: g.kind, mods: g.mods ?? [] }); })));
+  (bi == null ? t.blocks : [t.blocks[bi]]).forEach((b) => b.weeks.forEach((w) => w.groups.forEach((g) => { if (!m.has(lineKey(g))) m.set(lineKey(g), { key: lineKey(g), kind: g.kind, mods: g.mods ?? [] }); })));
   return [...m.values()];
 }
 /**
- * The template as one exercise uses it, without needing its own template: per set line it can use another
- * variation (L.vmods[key] = mods) or leave the line out (L.vmods[key] = "off"), and it can add set lines of its own
- * with their own progression (L.extra). Extra sets go after the template's, so hand-set weights keep their place.
+ * The template as one exercise uses it, without needing its own template: per block and set line it can use another
+ * variation (L.vmods["block:line"] = mods) or leave the line out (= "off"), and it can add set lines of its own with
+ * their own progression per block (L.extra). Extra sets go after the template's, so hand-set weights keep their place.
+ * (Keys without a block came from an earlier version and apply to every block.)
  */
 function liftT(L) {
   const t = clone(effTmpl(L)), vm = L.vmods ?? {};
   t.blocks.forEach((blk, bi) => {
     blk.weeks.forEach((wk) => wk.groups.forEach((g) => {
-      const v = vm[lineKey(g)];
+      const v = vm[`${bi}:${lineKey(g)}`] ?? vm[lineKey(g)];
       if (v === "off") g.sets = 0; else if (Array.isArray(v)) g.mods = [...v];
     }));
     (L.extra ?? []).filter((x) => x.method === t.method && (x.bi == null || x.bi === bi)).forEach((x) => blk.weeks.forEach((wk, i, all) =>
@@ -1580,7 +1581,7 @@ const testTarget = (L) => num(L.testMax) || defaultTestTarget({ lift: L.lift, on
 function openBlockBuilder(copyId) {
   const src = copyId ? db.blocks.find((b) => b.id === copyId) : null;
   if (src?.builder) {
-    ui.be = { ...clone(src.builder), name: `${src.name} (copy)`, start: today(), step: 2, scope: null, tvar: null, gform: null };
+    ui.be = { ...clone(src.builder), name: `${src.name} (copy)`, start: today(), step: 2, scope: null, gform: null };
   } else if (src) {
     // Cycles saved before templates existed: rebuild the scheme from their settings and generate a template.
     const g0 = src.lifts.find((l) => l.model !== "custom" && !l.variant?.length), g = newGen();
@@ -1603,7 +1604,7 @@ function openBlockBuilder(copyId) {
 function goStep(k, scope = null) {
   const be = ui.be;
   if (k > 1 && !be.tmpl) return;
-  Object.assign(be, { step: k, scope: k === 2 ? scope : null, tvar: null, gform: null });
+  Object.assign(be, { step: k, scope: k === 2 ? scope : null, gform: null });
   $("main").scrollTop = 0; render();
 }
 function renderBlockBuilder() {
@@ -1746,6 +1747,7 @@ function blockEditor(t, blk, bi, s) {
       <button class="icon" title="Duplicate block" aria-label="Duplicate block" onclick="copyBlock(${S},${bi})">${ic("copy")}</button>
       ${t.blocks.length > 1 ? `<button class="icon" title="Remove block" aria-label="Remove block" onclick="removeBlock(${S},${bi})">${ic("trash")}</button>` : ""}</div>
     <div class="seg">${[["tb", "Top + back-off"], ["drop", "Rep drop"]].map(([m, l]) => `<button class="${blk.model === m ? "sel" : ""}" onclick="setBlockModel(${S},${bi},'${m}')">${l}</button>`).join("")}</div>
+    ${blockVars(t, bi, s)}
     ${blk.weeks.map((wk, wi) => `<div class="twk"><div class="row"><span class="title grow">Week ${wi + 1}</span>
         <button class="btn-t sm" onclick="addGroup(${S},${bi},${wi})">${ic("plus")} Sets</button>
         <button class="icon" title="Duplicate week" aria-label="Duplicate week" onclick="copyWeek(${S},${bi},${wi})">${ic("copy")}</button>
@@ -1757,17 +1759,13 @@ function blockEditor(t, blk, bi, s) {
   </div>`;
 }
 function groupRow(t, g, s, bi, wi, gi) {
-  const S = S_(s), key = `${S}-${bi}-${wi}-${gi}`, open = ui.be.tvar === key, [, pre, unit] = METHODS[t.method];
-  const at = `${S},${bi},${wi},${gi}`;
+  const S = S_(s), [, pre, unit] = METHODS[t.method], at = `${S},${bi},${wi},${gi}`;
   const inp = (k, cls, mode) => `<input class="${cls}" inputmode="${mode}" value="${fmt(g[k])}" onchange="setG(${at},'${k}',this.value)">`;
-  const vars = varChoices(s);
   return `<div class="tg-row"><button class="kindbtn" title="Set type" onclick="cycleKind(${at})">${kindLabel(g.kind)}</button>
       ${inp("sets", "n-in", "numeric")}<span class="muted">×</span>${inp("reps", "n-in", "numeric")}
       <span class="muted">${pre}</span>${inp("load", "l-in", "decimal")}<span class="muted u">${unit}</span>
-      <button class="bandbtn varbtn ${g.mods?.length ? "on" : ""}" onclick="ui.be.tvar=${open ? "null" : q(key)};render()">${g.mods?.length ? esc(modText(g.mods)) : "std"}</button>
-      <button class="icon" title="Remove sets" aria-label="Remove sets" onclick="removeGroup(${at})">${ic("x")}</button></div>
-    ${open ? `<div class="row wrap tg-vars">${vars.map((v) => `<button class="fchip ${g.mods?.includes(v) ? "sel" : ""}" onclick="toggleGMod(${at},${q(v)})">${esc(v)}</button>`).join("")
-      || `<span class="muted">These exercises have no variations — add them in Splits → Exercises.</span>`}</div>` : ""}`;
+      <span class="tg-mods">${g.mods?.length ? esc(modText(g.mods)) : ""}</span>
+      <button class="icon" title="Remove sets" aria-label="Remove sets" onclick="removeGroup(${at})">${ic("x")}</button></div>`;
 }
 const grp = (s, bi, wi, gi) => tmplOf(s).blocks[bi].weeks[wi].groups[gi];
 const dropOver = (s, bi, wi, gi) => usersOf(s).forEach((L) => delete L.over?.[`${bi}-${wi}-${gi}`]);
@@ -1781,12 +1779,25 @@ function cycleKind(s, bi, wi, gi) {
   g.kind = KINDS[(k + 1) % KINDS.length][0];
   render();
 }
-function toggleGMod(s, bi, wi, gi, v) {
-  const g = grp(s, bi, wi, gi);
-  g.mods = toggled(g.mods, v, usersOf(s)[0]?.lift);
-  dropOver(s, bi, wi, gi); render();
+/** Variations are set per block: one row per set line (top, back-off, …), applied to every week of the block. */
+function blockVars(t, bi, s) {
+  const S = S_(s), vars = varChoices(s), lines = tmplLines(t, bi);
+  if (!lines.length) return "";
+  return `<div class="bvars"><div class="muted">Variations · whole block</div>
+    ${lines.map((l) => `<div class="row wrap" style="gap:6px"><span class="bv-name">${kindLabel(l.kind)}</span>
+      ${vars.map((v) => `<button class="fchip ${l.mods.includes(v) ? "sel" : ""}" onclick="toggleBlockMod(${S},${bi},${q(l.key)},${q(v)})">${esc(v)}</button>`).join("")
+        || `<span class="muted">No variations — add them in Splits → Exercises.</span>`}</div>`).join("")}</div>`;
 }
-function edit(s, fn) { fn(tmplOf(s)); structChanged(s); ui.be.tvar = null; render(); }
+function toggleBlockMod(s, bi, key, v) {
+  const name = usersOf(s)[0]?.lift;
+  tmplOf(s).blocks[bi].weeks.forEach((wk, wi) => wk.groups.forEach((g, gi) => {
+    if (lineKey(g) !== key) return;
+    g.mods = toggled(g.mods, v, name);
+    dropOver(s, bi, wi, gi);
+  }));
+  render();
+}
+function edit(s, fn) { fn(tmplOf(s)); structChanged(s); render(); }
 const blankGroup = (t, model) => ({ kind: model === "drop" ? "Set" : "Back-off", sets: 1, reps: 5, load: { rpe: 7, pct: 70, kg: 0 }[t.method], mods: [] });
 function addGroup(s, bi, wi) {
   edit(s, (t) => { const blk = t.blocks[bi], gs = blk.weeks[wi].groups, last = gs.at(-1); gs.push(last ? { ...clone(last), kind: last.kind === "TOP" ? "Back-off" : last.kind } : blankGroup(t, blk.model)); });
@@ -1880,56 +1891,70 @@ function liftCard(L, i) {
 }
 /** ③ Per exercise: change, add or remove variations of each set line (top, back-off, …) without its own template. */
 function liftLines(L, i) {
-  const t = effTmpl(L), vm = L.vmods ?? {}, vars = variationsOf(L.lift), [, , unit] = METHODS[t.method], open = ui.be.vopen === i;
+  const t = effTmpl(L), vm = L.vmods ?? {}, open = ui.be.vopen === i;
   const changed = Object.keys(vm).length + (L.extra?.length ?? 0);
-  const head = `<button class="btn-t sm pool-btn" onclick="ui.be.vopen=${open ? "null" : i};ui.be.xform=null;render()">Sets & variations${changed ? ` · ${changed} change${changed > 1 ? "s" : ""}` : ""} ${chev(open)}</button>`;
+  const head = `<button class="btn-t sm pool-btn" onclick="ui.be.vopen=${open ? "null" : i};ui.be.xform=null;render()">Sets & variations per block${changed ? ` · ${changed} change${changed > 1 ? "s" : ""}` : ""} ${chev(open)}</button>`;
   if (!open) return head;
-  const lines = tmplLines(t).map((l) => {
-    const v = vm[l.key], off = v === "off", cur = Array.isArray(v) ? v : l.mods;
-    const chips = [...new Set([...vars, ...cur])].map((x) => `<button class="fchip ${cur.includes(x) ? "sel" : ""}" ${off ? "disabled" : ""} onclick="setLineMod(${i},${q(l.key)},${q(x)})">${esc(x)}</button>`).join("");
-    return `<div class="vline ${off ? "off" : ""}"><div class="row"><b class="grow">${kindLabel(l.kind)}${l.mods.length ? ` <span class="mods">${esc(modText(l.mods))} in template</span>` : ""}</b>
-        <button class="btn-t sm ${off ? "" : "red"}" onclick="toggleLineOff(${i},${q(l.key)})">${off ? "Add back" : "Remove"}</button></div>
-      ${off ? `<div class="muted">Left out for ${esc(L.lift)}.</div>` : `<div class="row wrap" style="gap:6px">${chips || `<span class="muted">${esc(L.lift)} has no variations — add them in Splits → Exercises.</span>`}</div>`}</div>`;
-  }).join("");
-  const extras = (L.extra ?? []).map((x, k) => `<div class="vline"><div class="row"><span class="grow"><b>${kindLabel(x.kind)}</b> ${x.mods.length ? `<span class="mods">${esc(modText(x.mods))}</span>` : "std"}
-      <span class="muted">· ${x.sets}×${fmt(x.r0)}${x.rd ? ` (${x.rd > 0 ? "+" : ""}${fmt(x.rd)}/wk)` : ""} · ${fmt(x.l0)}→${fmt(x.l1)} ${unit} · ${x.bi == null ? "every block" : `block ${x.bi + 1}`}${x.method !== t.method ? " · other load method, not used" : ""}</span></span>
-      <button class="icon" title="Remove" aria-label="Remove" onclick="ui.be.lifts[${i}].extra.splice(${k},1);render()">${ic("x")}</button></div></div>`).join("");
+  const everyBlock = (L.extra ?? []).map((x, k) => [x, k]).filter(([x]) => x.bi == null);
   return `${head}<div class="col vbox">
-    <div class="muted">Only for ${esc(L.lift)}. Each line covers every week it appears in; variation sets use their own 1RM above.</div>
-    ${lines}${extras}
-    ${ui.be.xform?.i === i ? xformCard(L, i, t) : `<button class="btn-t sm" style="align-self:flex-start" onclick="openXForm(${i})">${ic("plus")} Add sets (e.g. variation back-offs)</button>`}</div>`;
+    <div class="muted">Only for ${esc(L.lift)}, block by block. Variation sets use their own 1RM above.</div>
+    ${t.blocks.map((_, bi) => liftBlockLines(L, i, t, bi)).join("")}
+    ${everyBlock.length ? `<div class="vblock col"><div class="title">Every block</div>${everyBlock.map(([x, k]) => extraRow(L, i, t, x, k)).join("")}</div>` : ""}</div>`;
 }
-function setLineMod(i, key, v) {
-  const L = ui.be.lifts[i], vm = (L.vmods ||= {}), base = tmplLines(effTmpl(L)).find((l) => l.key === key)?.mods ?? [];
-  const next = toggled(Array.isArray(vm[key]) ? vm[key] : base, v, L.lift);
-  if (modText(next) === modText(base)) delete vm[key]; else vm[key] = next;
+function liftBlockLines(L, i, t, bi) {
+  const vm = L.vmods ?? {}, vars = variationsOf(L.lift);
+  const lines = tmplLines(t, bi).map((l) => {
+    const v = vm[`${bi}:${l.key}`] ?? vm[l.key], off = v === "off", cur = Array.isArray(v) ? v : l.mods;
+    const chips = [...new Set([...vars, ...cur])].map((x) => `<button class="fchip ${cur.includes(x) ? "sel" : ""}" ${off ? "disabled" : ""} onclick="setLineMod(${i},${bi},${q(l.key)},${q(x)})">${esc(x)}</button>`).join("");
+    return `<div class="vline ${off ? "off" : ""}"><div class="row"><b class="grow">${kindLabel(l.kind)}${l.mods.length ? ` <span class="mods">${esc(modText(l.mods))} in template</span>` : ""}</b>
+        <button class="btn-t sm ${off ? "" : "red"}" onclick="toggleLineOff(${i},${bi},${q(l.key)})">${off ? "Add back" : "Remove"}</button></div>
+      ${off ? `<div class="muted">Left out in block ${bi + 1}.</div>` : `<div class="row wrap" style="gap:6px">${chips || `<span class="muted">${esc(L.lift)} has no variations — add them in Splits → Exercises.</span>`}</div>`}</div>`;
+  }).join("");
+  const extras = (L.extra ?? []).map((x, k) => [x, k]).filter(([x]) => x.bi === bi).map(([x, k]) => extraRow(L, i, t, x, k)).join("");
+  const xf = ui.be.xform;
+  return `<div class="vblock col"><div class="title">Block ${bi + 1}</div>${lines}${extras}
+    ${xf?.i === i && xf.bi === bi ? xformCard(L, i, t) : `<button class="btn-t sm" style="align-self:flex-start" onclick="openXForm(${i},${bi})">${ic("plus")} Add sets to block ${bi + 1}</button>`}</div>`;
+}
+function extraRow(L, i, t, x, k) {
+  return `<div class="vline"><div class="row"><span class="grow"><b>${kindLabel(x.kind)}</b> ${x.mods.length ? `<span class="mods">${esc(modText(x.mods))}</span>` : "std"}
+      <span class="muted">· ${x.sets}×${fmt(x.r0)}${x.rd ? ` (${x.rd > 0 ? "+" : ""}${fmt(x.rd)}/wk)` : ""} · ${fmt(x.l0)}→${fmt(x.l1)} ${METHODS[t.method][2]}${x.method !== t.method ? " · other load method, not used" : ""}</span></span>
+      <button class="icon" title="Remove" aria-label="Remove" onclick="ui.be.lifts[${i}].extra.splice(${k},1);render()">${ic("x")}</button></div></div>`;
+}
+function setLineMod(i, bi, key, v) {
+  const L = ui.be.lifts[i], vm = (L.vmods ||= {}), k = `${bi}:${key}`;
+  const base = tmplLines(effTmpl(L), bi).find((l) => l.key === key)?.mods ?? [];
+  const cur = vm[k] ?? vm[key];
+  const next = toggled(Array.isArray(cur) ? cur : base, v, L.lift);
+  // An all-blocks setting from an earlier version is split up, so this block can differ from the others.
+  if (vm[key] != null) { effTmpl(L).blocks.forEach((_, b) => { if (b !== bi) vm[`${b}:${key}`] ??= vm[key]; }); delete vm[key]; }
+  if (modText(next) === modText(base)) delete vm[k]; else vm[k] = next;
   L.over = {}; render();
 }
-function toggleLineOff(i, key) {
-  const vm = (ui.be.lifts[i].vmods ||= {});
-  if (vm[key] === "off") delete vm[key]; else vm[key] = "off";
+function toggleLineOff(i, bi, key) {
+  const L = ui.be.lifts[i], vm = (L.vmods ||= {}), k = `${bi}:${key}`;
+  if (vm[key] != null) { effTmpl(L).blocks.forEach((_, b) => { if (b !== bi) vm[`${b}:${key}`] ??= vm[key]; }); vm[k] ??= vm[key]; delete vm[key]; }
+  if (vm[k] === "off") delete vm[k]; else vm[k] = "off";
   render();
 }
-function openXForm(i) {
+function openXForm(i, bi) {
   const m = effTmpl(ui.be.lifts[i]).method;
-  ui.be.xform = { i, kind: "Back-off", mods: [], sets: "2", r0: "5", rd: "0", l0: { rpe: "7", pct: "70", kg: "-20" }[m], l1: { rpe: "8", pct: "77.5", kg: "-10" }[m], bi: "" };
+  ui.be.xform = { i, bi, kind: "Back-off", mods: [], sets: "2", r0: "5", rd: "0", l0: { rpe: "7", pct: "70", kg: "-20" }[m], l1: { rpe: "8", pct: "77.5", kg: "-10" }[m] };
   render();
 }
 function xformCard(L, i, t) {
   const xf = ui.be.xform, f = field("ui.be.xform", xf), [, , unit] = METHODS[t.method];
   return `<div class="gform col">
-    <div class="title">Add sets for ${esc(L.lift)} · own progression</div>
+    <div class="title">Add sets to block ${xf.bi + 1} · ${esc(L.lift)} only</div>
     <div class="seg">${[["Back-off", "Back-off sets"], ["Extra", "Extra sets"]].map(([k, l]) => `<button class="${xf.kind === k ? "sel" : ""}" onclick="ui.be.xform.kind='${k}';render()">${l}</button>`).join("")}</div>
     <div class="row wrap" style="gap:6px">${variationsOf(L.lift).map((v) => `<button class="fchip ${xf.mods.includes(v) ? "sel" : ""}" onclick="ui.be.xform.mods=toggled(ui.be.xform.mods,${q(v)},${q(L.lift)});render()">${esc(v)}</button>`).join("") || `<span class="muted">No variations — these will be standard sets.</span>`}</div>
     <div class="row">${f("Sets", "sets", "numeric")}${f("Start reps", "r0", "numeric")}${f("Reps / week", "rd")}</div>
     <div class="row">${f(`Load start (${unit})`, "l0")}${f("→ end", "l1")}</div>
-    <label class="f">Blocks<select onchange="ui.be.xform.bi=this.value">${[["", "Every block"], ...t.blocks.map((_, k) => [String(k), `Block ${k + 1}`])].map(([v, l]) => `<option value="${v}" ${xf.bi === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
     <div class="row"><span class="grow"></span><button class="btn-t" onclick="ui.be.xform=null;render()">Cancel</button><button class="btn sm" onclick="applyXForm()">Add</button></div></div>`;
 }
 function applyXForm() {
   const xf = ui.be.xform, L = ui.be.lifts[xf.i], sets = parseInt(xf.sets), r0 = num(xf.r0), l0 = num(xf.l0);
   if (!(sets > 0) || !(r0 >= 1) || l0 == null) return alert("Enter sets, start reps and a start load.");
-  (L.extra ||= []).push({ kind: xf.kind, mods: [...xf.mods], sets, r0, rd: num(xf.rd) ?? 0, l0, l1: num(xf.l1) ?? l0, bi: xf.bi === "" ? null : +xf.bi, method: effTmpl(L).method });
+  (L.extra ||= []).push({ kind: xf.kind, mods: [...xf.mods], sets, r0, rd: num(xf.rd) ?? 0, l0, l1: num(xf.l1) ?? l0, bi: xf.bi, method: effTmpl(L).method });
   ui.be.xform = null; render();
 }
 function setOver(i, key, value) {
@@ -1993,7 +2018,7 @@ function saveBlock() {
   }));
   const lens = be.tmpl.blocks.map((b) => b.weeks.length);
   db.blocks.push({ id: nextId(), name: be.name.trim(), start: be.start, weeks: coreN + (anyTest ? 1 : 0), blocks: lens.length, blockLens: lens, active: true, lifts,
-    builder: clone({ ...be, step: 2, scope: null, tvar: null, gform: null }) });
+    builder: clone({ ...be, step: 2, scope: null, gform: null }) });
   ui.be = null; save(); toast("Cycle saved and active");
 }
 
