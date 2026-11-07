@@ -373,6 +373,8 @@ function fitLine(pts) {
  *   form a run that also steps by one equal jump from block to block (see fitLine).
  * - No set goes above its own planned load + 1% of 1RM, so nothing is heavier than its RPE / % says; sets may land
  *   under it instead.
+ * - No set goes above the week's top set unless its planned load (RPE / % / kg) is higher than the top's. Top lines
+ *   are fitted first; sets with another variation have their own 1RM and are not compared.
  * Weights set by hand (L.over, keyed "block-week-group") win.
  */
 function liftWeights(t, L) {
@@ -391,22 +393,31 @@ function liftWeights(t, L) {
     });
     return m;
   });
-  const done = t.blocks.map(() => new Set());
+  // Runs: consecutive blocks sharing a line. Top lines first, so the others can be kept under the top set.
+  const done = t.blocks.map(() => new Set()), runs = [];
   t.blocks.forEach((_, k0) => lines[k0].forEach((__, id) => {
     if (done[k0].has(id)) return;
     let k1 = k0;
-    while (k1 + 1 < t.blocks.length && lines[k1 + 1].has(id)) k1++;
+    while (k1 + 1 < t.blocks.length && lines[k1 + 1].has(id)) done[++k1].add(id);
+    runs.push({ id, k0, k1 });
+  }));
+  runs.sort((a, b) => b.id.startsWith("TOP|") - a.id.startsWith("TOP|"));
+  /** The week's top set, when this group must stay at or under it (same variation, planned load not higher). */
+  const topCap = (k, i, g) => {
+    if (g.kind === "TOP") return Infinity;
+    const gs = t.blocks[k].weeks[i].groups, ti = gs.findIndex((x) => x.kind === "TOP");
+    if (ti < 0 || modText(gs[ti].mods) !== modText(g.mods) || (num(g.load) ?? 0) > (num(gs[ti].load) ?? 0)) return Infinity;
+    return W[k][i][ti];
+  };
+  runs.forEach(({ id, k0, k1 }) => {
     const pts = [];
-    for (let k = k0; k <= k1; k++) {
-      done[k].add(id);
-      lines[k].get(id).forEach(({ i, gi }) => {
-        const g = t.blocks[k].weeks[i].groups[gi], target = rawGroup(t, L, g);
-        pts.push({ k: k - k0, i, gi, target, cap: target + tolOf(g.mods) });
-      });
-    }
+    for (let k = k0; k <= k1; k++) lines[k].get(id).forEach(({ i, gi }) => {
+      const g = t.blocks[k].weeks[i].groups[gi], target = rawGroup(t, L, g);
+      pts.push({ k: k - k0, i, gi, target, cap: Math.min(target + tolOf(g.mods), topCap(k, i, g)) });
+    });
     const fit = fitLine(pts);
     pts.forEach((p) => (W[k0 + p.k][p.i][p.gi] = r25(fit.w(p))));
-  }));
+  });
   t.blocks.forEach((blk, bi) => blk.weeks.forEach((wk, wi) => wk.groups.forEach((_, gi) => {
     const o = L.over?.[`${bi}-${wi}-${gi}`];
     if (o != null) W[bi][wi][gi] = o;
