@@ -337,42 +337,28 @@ function rawGroup(t, L, g) {
   if (t.method === "pct") return ((one + bw) * load) / 100 - bw;
   return (one + bw) * (Rpe.pct(Math.min(12, Math.max(1, parseInt(g.reps) || 1)), load) ?? 0) - bw;
 }
-/** A line = the group at position gi in every week of a block, when it has the same kind and variation throughout. */
-function blockLine(blk, gi) {
-  const line = blk.weeks.map((w) => w.groups[gi]), g0 = line[0];
-  return g0 && line.every((g) => g && g.kind === g0.kind && modText(g.mods) === modText(g0.mods)) ? line : null;
-}
-/**
- * Evenly progressing line: its load changes by the same amount every week (as generated; a hand edit breaks it).
- * RPE stops at 10, so an RPE line that is even until it reaches 10 still counts.
- */
-function evenLine(blk, gi, method) {
-  const line = blockLine(blk, gi), n = blk.weeks.length;
-  if (!line || n < 2) return null;
-  const loads = line.map((g) => num(g.load) ?? 0), cap = (v) => (method === "rpe" ? Math.min(10, v) : v);
-  const even = (step) => loads.every((v, i) => Math.abs(v - cap(loads[0] + i * step)) <= 1e-6);
-  if (even((loads[n - 1] - loads[0]) / (n - 1))) return line;
-  return method === "rpe" && loads[1] < 10 && even(loads[1] - loads[0]) ? line : null;
-}
 /**
  * Equal jumps for one line: weight = start + block·B + week·J, with J (weekly) and B (block to block) whole weight
- * steps. Every week stays at or under its cap (its own planned load + 1% of 1RM); among those, the jumps that leave
- * the week furthest under its planned load closest to it win (then the smallest total gap).
- * pts: [{ k: block within the run, i: week within the block, target: planned kg, cap }].
+ * steps — always equal. Hard limit: no week above its cap (its own planned load + 1% of 1RM). Weeks may land under
+ * their planned load; the jumps that keep the week furthest under it closest win (then the smallest total gap).
+ * pts: [{ k: block within the run, i: week within the block, target: planned kg, cap }] — weeks may be missing.
  */
 function fitLine(pts) {
   const byK = {};
   pts.forEach((p) => (byK[p.k] ||= []).push(p));
-  const ks = Object.keys(byK).map(Number).sort((a, b) => a - b), at = (k, i) => byK[k].find((p) => p.i === i)?.target;
-  const slopes = ks.map((k) => { const n = byK[k].length; return n > 1 ? (at(k, n - 1) - at(k, 0)) / (n - 1) : 0; });
-  const bsteps = ks.slice(1).map((k) => at(k, 0) - at(k - 1, 0));
+  const ks = Object.keys(byK).map(Number).sort((a, b) => a - b);
+  const slopeOf = (ps) => { const a = ps.reduce((m, p) => (p.i < m.i ? p : m)), z = ps.reduce((m, p) => (p.i > m.i ? p : m)); return z.i > a.i ? (z.target - a.target) / (z.i - a.i) : null; };
+  const slopes = ks.map((k) => slopeOf(byK[k])).filter((v) => v != null);
+  const avg = slopes.length ? slopes.reduce((a, v) => a + v, 0) / slopes.length : 0;
+  const icept = ks.map((k) => byK[k].reduce((a, p) => a + p.target - p.i * avg, 0) / byK[k].length);
+  const bsteps = ks.slice(1).map((k, j) => (icept[j + 1] - icept[j]) / (k - ks[j]));
   const range = (vals) => {
     if (!vals.length) return [0];
-    const lo = Math.floor(Math.min(...vals) / STEP) - 2, hi = Math.ceil(Math.max(...vals) / STEP) + 2;
+    const lo = Math.floor(Math.min(...vals) / STEP) - 3, hi = Math.ceil(Math.max(...vals) / STEP) + 3;
     return Array.from({ length: hi - lo + 1 }, (_, j) => (lo + j) * STEP);
   };
   let best = null;
-  for (const J of range(slopes)) for (const B of range(bsteps)) {
+  for (const J of range(slopes)) for (const B of ks.length > 1 ? range(bsteps) : [0]) {
     const S = Rpe.floor(Math.min(...pts.map((p) => p.cap - p.k * B - p.i * J)) + 1e-9, STEP);
     let worst = -Infinity, sum = 0;
     pts.forEach((p) => { const d = p.target - (S + p.k * B + p.i * J); worst = Math.max(worst, d); sum += Math.abs(d); });
@@ -381,35 +367,46 @@ function fitLine(pts) {
   return { w: (p) => best.S + p.k * best.B + p.i * best.J, worst: best.worst };
 }
 /**
- * Weights [block][week][group].
- * - A line = the same set group (position, kind, variation) in every week of a block. One that progresses evenly
- *   (as generated) gets equal weekly jumps; consecutive blocks with the same pattern and length where it does form a
- *   run that also gets one equal jump from block to block (see fitLine).
- * - No week goes above its own planned load + 1% of 1RM, so a set never ends up heavier than its RPE / % says.
- *   When equal jumps can't stay within one weight step + 1% of 1RM below every week's planned load (e.g. reps and
- *   RPE both changing, which the RPE table doesn't follow in a straight line), that run uses each week's own load.
- * - Any other group uses its week's own load. Weights set by hand (L.over, keyed "block-week-group") win.
+ * Weights [block][week][group]. Hard rules:
+ * - Jumps are always equal. A line is one set group of a block (same kind and variation, e.g. "Back-off · Band"),
+ *   in every week it appears in. It rises by one equal jump per week, and consecutive blocks that have the same line
+ *   form a run that also steps by one equal jump from block to block (see fitLine).
+ * - No set goes above its own planned load + 1% of 1RM, so nothing is heavier than its RPE / % says; sets may land
+ *   under it instead.
+ * Weights set by hand (L.over, keyed "block-week-group") win.
  */
 function liftWeights(t, L) {
   const tolOf = (mods) => { const one = oneFor(t, L, mods); return t.method !== "kg" && one > 0 ? 0.01 * (one + liftBw(L)) : 0; };
   const W = t.blocks.map((blk) => blk.weeks.map((wk) => wk.groups.map((g) => r25(rawGroup(t, L, g)))));
-  const maxG = Math.max(0, ...t.blocks.flatMap((b) => b.weeks.map((w) => w.groups.length)));
-  const sig = (blk, gi) => { const g = blk.weeks[0].groups[gi]; return `${blk.model}|${blk.weeks.length}|${g.kind}|${modText(g.mods)}`; };
-  for (let gi = 0; gi < maxG; gi++) {
-    for (let k0 = 0; k0 < t.blocks.length;) {
-      if (!evenLine(t.blocks[k0], gi, t.method)) { k0++; continue; }
-      let k1 = k0;
-      while (k1 + 1 < t.blocks.length && evenLine(t.blocks[k1 + 1], gi, t.method) && sig(t.blocks[k0], gi) === sig(t.blocks[k1 + 1], gi)) k1++;
-      const tol = tolOf(t.blocks[k0].weeks[0].groups[gi].mods), pts = [];
-      for (let k = k0; k <= k1; k++) t.blocks[k].weeks.forEach((wk, i) => {
-        const target = rawGroup(t, L, wk.groups[gi]);
-        pts.push({ k: k - k0, i, target, cap: target + tol });
+  // Lines of each block: "kind|variation#n" (n-th such group in a week) → the weeks and positions it is in.
+  const lines = t.blocks.map((blk) => {
+    const m = new Map();
+    blk.weeks.forEach((wk, i) => {
+      const seen = {};
+      wk.groups.forEach((g, gi) => {
+        const k = lineKey(g), id = `${k}#${(seen[k] = (seen[k] ?? 0) + 1)}`;
+        if (!m.has(id)) m.set(id, []);
+        m.get(id).push({ i, gi });
       });
-      const fit = fitLine(pts);
-      if (fit.worst <= tol + STEP + 1e-9) pts.forEach((p) => (W[k0 + p.k][p.i][gi] = r25(fit.w(p))));
-      k0 = k1 + 1;
+    });
+    return m;
+  });
+  const done = t.blocks.map(() => new Set());
+  t.blocks.forEach((_, k0) => lines[k0].forEach((__, id) => {
+    if (done[k0].has(id)) return;
+    let k1 = k0;
+    while (k1 + 1 < t.blocks.length && lines[k1 + 1].has(id)) k1++;
+    const pts = [];
+    for (let k = k0; k <= k1; k++) {
+      done[k].add(id);
+      lines[k].get(id).forEach(({ i, gi }) => {
+        const g = t.blocks[k].weeks[i].groups[gi], target = rawGroup(t, L, g);
+        pts.push({ k: k - k0, i, gi, target, cap: target + tolOf(g.mods) });
+      });
     }
-  }
+    const fit = fitLine(pts);
+    pts.forEach((p) => (W[k0 + p.k][p.i][p.gi] = r25(fit.w(p))));
+  }));
   t.blocks.forEach((blk, bi) => blk.weeks.forEach((wk, wi) => wk.groups.forEach((_, gi) => {
     const o = L.over?.[`${bi}-${wi}-${gi}`];
     if (o != null) W[bi][wi][gi] = o;
