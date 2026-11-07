@@ -337,33 +337,75 @@ function rawGroup(t, L, g) {
   if (t.method === "pct") return ((one + bw) * load) / 100 - bw;
   return (one + bw) * (Rpe.pct(Math.min(12, Math.max(1, parseInt(g.reps) || 1)), load) ?? 0) - bw;
 }
+/** A line = the group at position gi in every week of a block, when it has the same kind and variation throughout. */
+function blockLine(blk, gi) {
+  const line = blk.weeks.map((w) => w.groups[gi]), g0 = line[0];
+  return g0 && line.every((g) => g && g.kind === g0.kind && modText(g.mods) === modText(g0.mods)) ? line : null;
+}
 /**
- * Weights [block][week][group]. A line (same position, kind and variation in every week of a block) whose load changes
- * evenly week to week steps in equal jumps from the rounded week-1 weight, lowered until the last week overshoots its
- * own load by less than one jump and by no more than 1% of 1RM. Any other group uses its week's own load.
- * Weights set by hand (L.over, keyed "block-week-group") win.
+ * Evenly progressing line: its load changes by the same amount every week (as generated; a hand edit breaks it).
+ * RPE stops at 10, so an RPE line that is even until it reaches 10 still counts.
+ */
+function evenLine(blk, gi, method) {
+  const line = blockLine(blk, gi), n = blk.weeks.length;
+  if (!line || n < 2) return null;
+  const loads = line.map((g) => num(g.load) ?? 0), cap = (v) => (method === "rpe" ? Math.min(10, v) : v);
+  const even = (step) => loads.every((v, i) => Math.abs(v - cap(loads[0] + i * step)) <= 1e-6);
+  if (even((loads[n - 1] - loads[0]) / (n - 1))) return line;
+  return method === "rpe" && loads[1] < 10 && even(loads[1] - loads[0]) ? line : null;
+}
+/**
+ * Weights [block][week][group].
+ * - Inside a block, an evenly progressing line steps in equal weekly jumps from the rounded week-1 weight, lowered
+ *   until the last week overshoots its own load by less than one jump and by no more than 1% of 1RM.
+ * - Consecutive blocks with the same pattern and length whose line progresses evenly in each form a run: every block
+ *   starts one equal jump (rounded block 1 → block 2 change) above the one before and repeats block 1's weekly jumps.
+ *   No set may go over its ceiling — the block's end RPE at that set's reps (RPE) or the block's last-week load
+ *   (% and kg), + 1% of 1RM — so when one would, the whole run of that line moves down by the same amount and the
+ *   jumps stay equal.
+ * - Any other group uses its week's own load. Weights set by hand (L.over, keyed "block-week-group") win.
  */
 function liftWeights(t, L) {
-  return t.blocks.map((blk, bi) => {
+  const tolOf = (mods) => { const one = oneFor(t, L, mods); return t.method !== "kg" && one > 0 ? 0.01 * (one + liftBw(L)) : 0; };
+  const W = t.blocks.map((blk) => {
     const n = blk.weeks.length, out = blk.weeks.map((wk) => wk.groups.map((g) => r25(rawGroup(t, L, g))));
     const maxG = Math.max(0, ...blk.weeks.map((w) => w.groups.length));
-    for (let gi = 0; n >= 2 && gi < maxG; gi++) {
-      const line = blk.weeks.map((w) => w.groups[gi]), g0 = line[0];
-      if (line.some((g) => !g || g.kind !== g0.kind || modText(g.mods) !== modText(g0.mods))) continue;
-      const loads = line.map((g) => num(g.load) ?? 0);
-      if (loads.some((v, i) => Math.abs(v - lerp(loads[0], loads[n - 1], i, n)) > 1e-6)) continue;
-      const one = oneFor(t, L, g0.mods), tol = t.method !== "kg" && one > 0 ? 0.01 * (one + liftBw(L)) : 0;
-      const first = r25(rawGroup(t, L, g0)), limit = rawGroup(t, L, line[n - 1]);
+    for (let gi = 0; gi < maxG; gi++) {
+      const line = evenLine(blk, gi, t.method);
+      if (!line) continue;
+      const first = r25(rawGroup(t, L, line[0])), limit = rawGroup(t, L, line[n - 1]), tol = tolOf(line[0].mods);
       let jump = r25((limit - first) / (n - 1));
       while (jump > STEP && (first + (n - 1) * jump - limit >= jump || first + (n - 1) * jump - limit > tol)) jump -= STEP;
       line.forEach((_, i) => (out[i][gi] = first + i * jump));
     }
-    blk.weeks.forEach((wk, wi) => wk.groups.forEach((_, gi) => {
-      const o = L.over?.[`${bi}-${wi}-${gi}`];
-      if (o != null) out[wi][gi] = o;
-    }));
     return out;
   });
+  const maxG = Math.max(0, ...t.blocks.flatMap((b) => b.weeks.map((w) => w.groups.length)));
+  const sig = (blk, gi) => { const g = blk.weeks[0].groups[gi]; return `${blk.model}|${blk.weeks.length}|${g.kind}|${modText(g.mods)}`; };
+  for (let gi = 0; gi < maxG; gi++) {
+    for (let k0 = 0; k0 < t.blocks.length;) {
+      let k1 = k0;
+      while (k1 + 1 < t.blocks.length && evenLine(t.blocks[k0], gi, t.method) && evenLine(t.blocks[k1 + 1], gi, t.method) && sig(t.blocks[k0], gi) === sig(t.blocks[k1 + 1], gi)) k1++;
+      if (k1 > k0) {
+        const base = W[k0].map((w) => w[gi]), g0 = t.blocks[k0].weeks[0].groups[gi], tol = tolOf(g0.mods);
+        const step = r25(rawGroup(t, L, t.blocks[k0 + 1].weeks[0].groups[gi]) - base[0]);
+        const cap = (k, i) => {
+          const blk = t.blocks[k], last = blk.weeks.at(-1).groups[gi];
+          return rawGroup(t, L, t.method === "rpe" ? { ...last, reps: blk.weeks[i].groups[gi].reps } : last) + tol;
+        };
+        let down = 0;
+        for (let k = k0; k <= k1; k++) base.forEach((w, i) => (down = Math.max(down, w + (k - k0) * step - Rpe.floor(cap(k, i) + 1e-9, STEP))));
+        const lower = Math.ceil(down / STEP - 1e-9) * STEP;
+        for (let k = k0; k <= k1; k++) base.forEach((w, i) => (W[k][i][gi] = r25(w + (k - k0) * step - lower)));
+      }
+      k0 = k1 + 1;
+    }
+  }
+  t.blocks.forEach((blk, bi) => blk.weeks.forEach((wk, wi) => wk.groups.forEach((_, gi) => {
+    const o = L.over?.[`${bi}-${wi}-${gi}`];
+    if (o != null) W[bi][wi][gi] = o;
+  })));
+  return W;
 }
 /** The exercise's weeks as saved in a cycle: every set listed on its own, variation sets tagged. */
 function liftPlan(t, L) {
