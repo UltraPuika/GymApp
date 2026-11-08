@@ -1,0 +1,8 @@
+{
+  "name": "gymlog",
+  "private": true,
+  "description": "GymLog — tests for the web app in web/ (no dependencies, Node's built-in test runner)",
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.js\""
+  }
+}
