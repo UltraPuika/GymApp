@@ -349,8 +349,11 @@ function rawGroup(t, L, g) {
 }
 /**
  * Equal jumps for one line: weight = start + block·B + week·J, with J (weekly) and B (block to block) whole weight
- * steps — always equal. Hard limit: no week above its cap (its own planned load + 1% of 1RM). Weeks may land under
- * their planned load; the jumps that keep the week furthest under it closest win (then the smallest total gap).
+ * steps — always equal. Hard limit: no week above its cap (its own planned load + 1% of 1RM).
+ * Bigger jumps are preferred: any jumps whose furthest-under week is at most one weight step further under than
+ * the best possible count as good, and among those the biggest weekly jump wins (then the biggest block jump, then
+ * the closest block-end weeks). So a planned rise between two weight steps is rounded up, and the first weeks land
+ * under their planned load rather than the line staying flat.
  * pts: [{ k: block within the run, i: week within the block, target: planned kg, cap }] — weeks may be missing.
  */
 function fitLine(pts) {
@@ -364,16 +367,21 @@ function fitLine(pts) {
   const bsteps = ks.slice(1).map((k, j) => (icept[j + 1] - icept[j]) / (k - ks[j]));
   const range = (vals) => {
     if (!vals.length) return [0];
-    const lo = Math.floor(Math.min(...vals) / STEP) - 3, hi = Math.ceil(Math.max(...vals) / STEP) + 3;
+    const lo = Math.floor(Math.min(...vals) / STEP) - 2, hi = Math.ceil(Math.max(...vals) / STEP) + 2;
     return Array.from({ length: hi - lo + 1 }, (_, j) => (lo + j) * STEP);
   };
-  let best = null;
+  const ends = ks.map((k) => byK[k].reduce((m, p) => (p.i > m.i ? p : m)));
+  const cands = [];
   for (const J of range(slopes)) for (const B of ks.length > 1 ? range(bsteps) : [0]) {
     const S = Rpe.floor(Math.min(...pts.map((p) => p.cap - p.k * B - p.i * J)) + 1e-9, STEP);
+    const at = (p) => S + p.k * B + p.i * J;
     let worst = -Infinity, sum = 0;
-    pts.forEach((p) => { const d = p.target - (S + p.k * B + p.i * J); worst = Math.max(worst, d); sum += Math.abs(d); });
-    if (!best || worst < best.worst - 1e-9 || (Math.abs(worst - best.worst) <= 1e-9 && sum < best.sum - 1e-9)) best = { J, B, S, worst, sum };
+    pts.forEach((p) => { const d = p.target - at(p); worst = Math.max(worst, d); sum += Math.abs(d); });
+    cands.push({ J, B, S, worst, sum, end: Math.max(...ends.map((p) => p.target - at(p))) });
   }
+  const floorWorst = Math.min(...cands.map((c) => c.worst));
+  const best = cands.filter((c) => c.worst <= floorWorst + STEP + 1e-9).sort((a, b) =>
+    Math.abs(b.J) - Math.abs(a.J) || Math.abs(b.B) - Math.abs(a.B) || a.end - b.end || a.sum - b.sum)[0];
   return { w: (p) => best.S + p.k * best.B + p.i * best.J, worst: best.worst };
 }
 /**
