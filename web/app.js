@@ -1635,11 +1635,18 @@ function renderBlockBuilder() {
     `<button class="${be.step === k ? "sel" : ""}" ${k > 1 && !be.tmpl ? "disabled" : ""} onclick="goStep(${k})">${l}</button>`).join("")}</div>`;
   $("main").innerHTML = steps + [beStep1, beStep2, beStep3][be.step - 1]();
 }
-const field = (path, c) => (label, key, mode = "decimal") =>
-  `<label class="f">${label}<input inputmode="${mode}" value="${esc(c[key])}" onchange="${path}.${key}=this.value;render()"></label>`;
+/** Flips a number's sign ("" stays ""). */
+const neg = (v) => { const n = num(v); return n == null ? "" : fmt(n === 0 ? 0 : -n); };
+/** ± button for a field that can be negative: phone number keyboards often have no minus key. */
+const signBtn = (expr) => `<button class="sign" type="button" title="Change sign" aria-label="Change sign" onclick="${expr}=neg(${expr});render()">±</button>`;
+/** mode "signed" = may be negative: decimal keyboard plus a ± button. */
+const numInput = (path, key, value, mode, placeholder = "") => {
+  const input = `<input inputmode="${mode === "signed" ? "decimal" : mode}" value="${esc(value)}" ${placeholder ? `placeholder="${esc(placeholder)}"` : ""} onchange="${path}.${key}=this.value;render()">`;
+  return mode === "signed" ? `<div class="sgn">${input}${signBtn(`${path}.${key}`)}</div>` : input;
+};
+const field = (path, c) => (label, key, mode = "decimal") => `<label class="f">${label}${numInput(path, key, c[key], mode)}</label>`;
 /** Like field(), but empty means "same as …" and the placeholder shows that value. */
-const fieldP = (path, c) => (label, key, auto, mode = "numeric") =>
-  `<label class="f">${label}<input inputmode="${mode}" value="${esc(c[key] ?? "")}" placeholder="${esc(auto ?? "")}" onchange="${path}.${key}=this.value;render()"></label>`;
+const fieldP = (path, c) => (label, key, auto, mode = "numeric") => `<label class="f">${label}${numInput(path, key, c[key] ?? "", mode, auto ?? "")}</label>`;
 
 // ----- ① Template: cycle length, exercises and a weekly scheme that generates the template -----
 function beStep1() {
@@ -1650,7 +1657,7 @@ function beStep1() {
   const ranges = {
     rpe: `<div class="row">${fd(`Top RPE ${cyc}start`, "rpeT0")}${fd("→ end", "rpeT1")}</div>${tb ? `<div class="row">${fd(`Back-off RPE ${cyc}start`, "rpeB0")}${fd("→ end", "rpeB1")}</div>` : ""}`,
     pct: `<div class="row">${fd(`Top % ${cyc}start`, "pctT0")}${fd("→ end", "pctT1")}</div>${tb ? `<div class="row">${fd(`Back-off % ${cyc}start`, "pctB0")}${fd("→ end", "pctB1")}</div>` : ""}`,
-    kg: `<div class="row">${fd("+kg / week", "kgStep")}${tb ? fd("Back-off kg vs top", "boKg") : ""}</div><div class="muted">Each exercise's start kg is set in step ②.</div>`,
+    kg: `<div class="row">${fd("+kg / week", "kgStep", "signed")}${tb ? fd("Back-off kg vs top", "boKg", "signed") : ""}</div><div class="muted">Each exercise's start kg is set in step ②.</div>`,
   }[m];
   const r0 = num(g.cR0) ?? 5, b0 = num(g.bR0) ?? r0, rd = num(d.rDw) ?? 0, bd = num(d.bDw) ?? rd;
   const seq = (a, step) => Array.from({ length: Math.min(n, 8) }, (_, i) => Math.max(1, Math.round(a + i * step))).join(" → ") + (n > 8 ? " → …" : "");
@@ -1676,16 +1683,16 @@ function beStep1() {
     <div class="card col"><div class="title">Weekly scheme · every block</div>
       ${seg("model", [["tb", "Top + back-off"], ["drop", "Rep drop"]])}
       <div class="row">${f(tb ? "Top start reps" : "Start reps", "cR0", "numeric")}${tb ? fp("Back-off start reps", "bR0", g.cR0) : ""}</div>
-      ${tb ? `<div class="row">${fd("Top reps / week", "rDw")}${fpd("Back-off reps / week", "bDw", d.rDw, "decimal")}${fd("Back-off sets", "boSets", "numeric")}</div>`
-        : `<div class="row">${fd("Reps change / week", "rDw")}${fd("Sets", "sets", "numeric")}</div>`}
+      ${tb ? `<div class="row">${fd("Top reps / week", "rDw", "signed")}${fpd("Back-off reps / week", "bDw", d.rDw, "signed")}${fd("Back-off sets", "boSets", "numeric")}</div>`
+        : `<div class="row">${fd("Reps change / week", "rDw", "signed")}${fd("Sets", "sets", "numeric")}</div>`}
       <div class="muted">Load method</div>
       ${seg("method", Object.entries(METHODS).map(([k, [l]]) => [k, l]), (v) => `ui.be.gen.cLd='${BLOCK_LOAD[v]}';`)}
       ${ranges}
       ${n > 0 ? `<div class="muted">Block 1 reps · ${tb ? `top ${seq(r0, rd)} · back-off ${seq(b0, bd)}` : seq(r0, rd)}</div>` : ""}
     </div>
     ${nb > 1 ? `<div class="card col"><div class="title">Block to block</div>
-      <div class="row">${f(tb ? "Top reps / block" : "Reps / block", "cRd")}${tb ? fp("Back-off reps / block", "bRd", g.cRd, "decimal") : ""}</div>
-      <div class="row">${f(`Load / block (${METHODS[m][2]})`, "cLd")}</div>
+      <div class="row">${f(tb ? "Top reps / block" : "Reps / block", "cRd", "signed")}${tb ? fp("Back-off reps / block", "bRd", g.cRd, "signed") : ""}</div>
+      <div class="row">${f(`Load / block (${METHODS[m][2]})`, "cLd", "signed")}</div>
       ${m !== "kg" && n > 0 ? `<div class="muted">${(tb ? [["T", "Top"], ["B", "Back-off"]] : [["T", ""]]).map(([part, l]) => `${l ? `${l}: ` : ""}${Array.from({ length: nb }, (_, k) =>
         `${fmt(cycleLoad(g, m, part, k, 0, n))} → ${fmt(cycleLoad(g, m, part, k, n - 1, n))}`).join(" · ")}`).join("<br>")} ${METHODS[m][2]}</div>
         ${(() => { const sp = (num(d[`${m}T1`]) ?? 0) - (num(d[`${m}T0`]) ?? 0) - (nb - 1) * (num(g.cLd) ?? 0); return sp < 0 ? `<div class="muted" style="color:var(--amber)">Load / block is larger than the range allows — each block goes down inside.</div>` : ""; })()}` : ""}
@@ -1785,7 +1792,7 @@ function groupRow(t, g, s, bi, wi, gi) {
   const inp = (k, cls, mode) => `<input class="${cls}" inputmode="${mode}" value="${fmt(g[k])}" onchange="setG(${at},'${k}',this.value)">`;
   return `<div class="tg-row"><button class="kindbtn" title="Set type" onclick="cycleKind(${at})">${kindLabel(g.kind)}</button>
       ${inp("sets", "n-in", "numeric")}<span class="muted">×</span>${inp("reps", "n-in", "numeric")}
-      <span class="muted">${pre}</span>${inp("load", "l-in", "decimal")}<span class="muted u">${unit}</span>
+      <span class="muted">${pre}</span>${inp("load", "l-in", "decimal")}${t.method === "kg" ? `<button class="sign" type="button" title="Change sign" aria-label="Change sign" onclick="setG(${at},'load',neg(grp(${at}).load))">±</button>` : ""}<span class="muted u">${unit}</span>
       <span class="tg-mods">${g.mods?.length ? esc(modText(g.mods)) : ""}</span>
       <button class="icon" title="Remove sets" aria-label="Remove sets" onclick="removeGroup(${at})">${ic("x")}</button></div>`;
 }
@@ -1859,8 +1866,8 @@ function gformCard(t, s) {
     <div class="seg">${[["Back-off", "Back-off sets"], ["Extra", "Extra sets"]].map(([k, l]) => `<button class="${gf.kind === k ? "sel" : ""}" onclick="ui.be.gform.kind='${k}';render()">${l}</button>`).join("")}</div>
     <div class="muted">Variation (combine any, none = standard)</div>
     <div class="row wrap" style="gap:6px">${vars.map((v) => `<button class="fchip ${gf.mods.includes(v) ? "sel" : ""}" onclick="ui.be.gform.mods=toggled(ui.be.gform.mods,${q(v)},usersOf(ui.be.gform.s)[0]?.lift);render()">${esc(v)}</button>`).join("") || `<span class="muted">No variations yet.</span>`}</div>
-    <div class="row">${f("Sets", "sets", "numeric")}${f("Start reps", "r0", "numeric")}${f("Reps / week", "rd")}</div>
-    <div class="row">${f(`Load start (${unit})`, "l0")}${f("→ end", "l1")}</div>
+    <div class="row">${f("Sets", "sets", "numeric")}${f("Start reps", "r0", "numeric")}${f("Reps / week", "rd", "signed")}</div>
+    <div class="row">${f(`Load start (${unit})`, "l0", "signed")}${f("→ end", "l1", "signed")}</div>
     <label class="chk-item"><input type="checkbox" ${gf.all ? "checked" : ""} onchange="ui.be.gform.all=this.checked"> Add to every block</label>
     <div class="row"><span class="grow"></span><button class="btn-t" onclick="ui.be.gform=null;render()">Cancel</button><button class="btn sm" onclick="applyGForm()">Add</button></div></div>`;
 }
@@ -1902,7 +1909,9 @@ function liftCard(L, i) {
     <div class="row"><b class="grow" style="font-size:18px">${esc(L.lift)}</b>${L.custom ? '<span class="badge sm">OWN TEMPLATE</span>' : ""}
       <button class="icon" title="Remove exercise" aria-label="Remove exercise" onclick="removeLift(${i})">${ic("trash")}</button></div>
     <div class="row wrap">${mods.map(([key, m]) => `<label class="f one-f">${key ? esc(key) : kg ? "Start kg" : "1RM kg"}<input inputmode="decimal" value="${esc(map[key] ?? "")}"
-      placeholder="${key ? esc(fmt(oneFor(t, { ...L, [kg ? "start" : "one"]: { "": map[""] } }, m))) : ""}" onchange="setOne(${i},${q(key)},this.value)"></label>`).join("")}</div>
+      placeholder="${key ? esc(fmt(oneFor(t, { ...L, [kg ? "start" : "one"]: { "": map[""] } }, m))) : ""}" onchange="setOne(${i},${q(key)},this.value)"></label>`).join("")}
+      ${bw ? `<label class="f one-f">Bodyweight<input inputmode="decimal" value="${esc(L.bw)}" onchange="ui.be.lifts[${i}].bw=this.value;render()"></label>` : ""}</div>
+    ${bw ? `<div class="muted">Bodyweight lift: weights are added kg and 1RM is added kg. Load = (1RM + 0.9 × BW) × % − 0.9 × BW, with 0.9 × ${esc(fmt(num(L.bw) ?? bwAt()))} = ${fmt(Math.round(bw * 10) / 10)} kg. % is of the total (added kg + 0.9 × BW).</div>` : ""}
     <label class="chk-item"><input type="checkbox" ${L.custom ? "checked" : ""} onchange="setCustom(${i},this.checked)"> Make this exercise different (own template)</label>
     ${L.custom ? `<button class="btn-o sm" style="align-self:flex-start" onclick="goStep(2,${i})">Edit ${esc(L.lift)} template →</button>` : ""}
     ${liftLines(L, i)}
@@ -1969,8 +1978,8 @@ function xformCard(L, i, t) {
     <div class="title">Add sets to block ${xf.bi + 1} · ${esc(L.lift)} only</div>
     <div class="seg">${[["Back-off", "Back-off sets"], ["Extra", "Extra sets"]].map(([k, l]) => `<button class="${xf.kind === k ? "sel" : ""}" onclick="ui.be.xform.kind='${k}';render()">${l}</button>`).join("")}</div>
     <div class="row wrap" style="gap:6px">${variationsOf(L.lift).map((v) => `<button class="fchip ${xf.mods.includes(v) ? "sel" : ""}" onclick="ui.be.xform.mods=toggled(ui.be.xform.mods,${q(v)},${q(L.lift)});render()">${esc(v)}</button>`).join("") || `<span class="muted">No variations — these will be standard sets.</span>`}</div>
-    <div class="row">${f("Sets", "sets", "numeric")}${f("Start reps", "r0", "numeric")}${f("Reps / week", "rd")}</div>
-    <div class="row">${f(`Load start (${unit})`, "l0")}${f("→ end", "l1")}</div>
+    <div class="row">${f("Sets", "sets", "numeric")}${f("Start reps", "r0", "numeric")}${f("Reps / week", "rd", "signed")}</div>
+    <div class="row">${f(`Load start (${unit})`, "l0", "signed")}${f("→ end", "l1", "signed")}</div>
     <div class="row"><span class="grow"></span><button class="btn-t" onclick="ui.be.xform=null;render()">Cancel</button><button class="btn sm" onclick="applyXForm()">Add</button></div></div>`;
 }
 function applyXForm() {

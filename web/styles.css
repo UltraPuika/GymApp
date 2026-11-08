@@ -213,3 +213,7 @@ label.f.one-f { flex: 0 1 96px; }
 .bv-name { font-size: 12px; font-weight: 600; width: 62px; }
 .tg-mods { margin-left: auto; font-size: 11px; color: var(--lime); max-width: 70px; line-height: 1.2; text-align: right; }
 .vblock { gap: 6px; }
+.sgn { display: flex; gap: 4px; align-items: stretch; }
+.sgn input { flex: 1; min-width: 0; }
+button.sign { background: var(--sx); border: 1px solid var(--o); color: var(--t); border-radius: 10px; min-width: 36px; font-size: 16px; font-weight: 700; padding: 0 6px; flex-shrink: 0; }
+.tg-row button.sign { min-width: 26px; height: 32px; border-radius: 8px; font-size: 14px; padding: 0; }
