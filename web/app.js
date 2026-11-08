@@ -460,15 +460,41 @@ function expand(entries) {
   })));
 }
 
+/**
+ * The cycle week an exercise is on. Weeks move on with training, not with the calendar: every day the exercise was
+ * logged since the cycle started completes its next week that has sets (weeks without sets for it are skipped).
+ * A skipped calendar week leaves it on the same cycle week — the cycle ends a week later — and one cycle week can
+ * be spread over several calendar weeks. On the day being planned, that day's own session counts only when it is
+ * not the workout in progress. Returns 0 before the cycle starts and weeks + 1 once it is finished.
+ */
+function liftWeek(b, cfg, date = today()) {
+  const from = mondayOf(b.start);
+  if (date < from) return 0;
+  const dates = sessionsOf(cfg.lift).map((s) => s.date).filter((d) => d >= from && (!b.ended || d <= b.ended));
+  let done = dates.filter((d) => d < date).length + (dates.includes(date) && db.workout?.date !== date ? 1 : 0), w = 0;
+  while (w < cfg.plan.length && (!cfg.plan[w].sets.length || done-- > 0)) w++;
+  return w + 1;
+}
+/** The cycle's week: the slowest of its exercises that are in the current split (all of them if none are). */
+function cycleWeek(b, date = today()) {
+  const inSplit = new Set(currentProgram().days.flatMap((d) => d.items.flatMap((it) => [resolveItem(it.label).exercise, ...(it.pool ?? [])])));
+  const std = b.lifts.filter((l) => !l.variant?.length), used = std.filter((l) => inSplit.has(l.lift));
+  return Math.min(...(used.length ? used : std).map((l) => liftWeek(b, l, date)));
+}
+/** Estimated last day: the remaining weeks counted from this week (a skipped week pushes it back). */
+function cycleEnd(b) {
+  if (b.ended) return b.ended;
+  const wk = cycleWeek(b);
+  if (wk < 1) return addDays(mondayOf(b.start), b.weeks * 7 - 1);
+  if (wk > b.weeks) return b.lifts.flatMap((l) => sessionsOf(l.lift).map((s) => s.date)).filter((d) => d >= mondayOf(b.start)).sort().at(-1) ?? today();
+  return addDays(mondayOf(today()), (b.weeks - wk + 1) * 7 - 1);
+}
 function planFor(name, date = today()) {
   const b = activeBlock();
   // The lift's standard entry first, then its variation entries (each with its own progression), in cycle order.
   const cfgs = (b?.lifts.filter((l) => l.lift === name) ?? []).sort((x, y) => !!x.variant?.length - !!y.variant?.length);
   if (cfgs.length) {
-    let wk = blockWeek(b, date);
-    const weekStart = addDays(mondayOf(b.start), (wk - 1) * 7);
-    // Already trained this lift in the current block week → next session gets next week's sets.
-    if (sessionsOf(name).some((s) => s.date >= weekStart && s.date < date)) wk++;
+    const wk = liftWeek(b, cfgs[0], date);
     const sets = wk >= 1 && wk <= b.weeks ? cfgs.flatMap((c) => c.plan[wk - 1]?.sets ?? []) : [];
     if (sets.length) return { type: "block", week: wk, sets: expand(sets) };
   }
@@ -618,7 +644,7 @@ function renderHome() {
         <div class="ex-name">${esc(program(w.programId)?.days[w.dayIdx]?.name)}</div>
         <div class="muted">${w.items.filter((i) => i.status !== "pending").length}/${w.items.length} exercises done · tap to continue</div></button>` : ""}
     <div><div class="title">Current split</div><div class="ex-name">${esc(prog.name)}</div>
-      ${b ? `<div class="muted">Active cycle: <b class="lime">${esc(b.name)}</b> · ${cyclePos(b, Math.min(Math.max(blockWeek(b), 1), b.weeks))}</div>` : ""}</div>
+      ${b ? `<div class="muted">Active cycle: <b class="lime">${esc(b.name)}</b> · ${(() => { const wk = cycleWeek(b); return wk < 1 ? `starts ${dmy(mondayOf(b.start))}` : wk > b.weeks ? "finished" : `${cyclePos(b, wk)} · ends ~${dmy(cycleEnd(b))}`; })()}</div>` : ""}</div>
     ${order.map((i) => dayCard(prog.days[i], i, { active: i === active, next: active == null && i === todo[0], doneOn: doneOn[i], locked: !!w && i !== active, canMove: active == null && todo.includes(i) && i !== todo[0] })).join("")}
     ${todo.length ? "" : `<div class="muted" style="text-align:center">All days done this week. New week starts in standard order.</div>`}`}`;
 }
@@ -1458,15 +1484,16 @@ function renderBlocks() {
   rpeRefresh();
 }
 function blockCard(b) {
-  const wk = blockWeek(b);
+  const wk = b.active ? cycleWeek(b) : 0;
   const open = ui.blockOpen[b.id] ?? b.active;
-  const end = b.ended ?? addDays(b.start, b.weeks * 7 - 1);
+  const end = b.active ? cycleEnd(b) : b.ended ?? addDays(b.start, b.weeks * 7 - 1);
   return `<div class="card ${b.active ? "cur-prog" : ""}">
     <div class="row" style="cursor:pointer" onclick="ui.blockOpen[${b.id}]=${!open};render()">
       <div class="grow"><b>${esc(b.name)}</b> ${b.active ? '<span class="badge">ACTIVE</span>' : ""}
-        <div class="muted">${dmy(b.start)} – ${dmy(end)} · ${b.blockLens?.length > 1 ? `${b.blockLens.length} blocks · ${b.blockLens.join(" + ")} weeks${hasTest(b) ? " + test" : ""}` : nBlocks(b) > 1 ? `${nBlocks(b)} blocks × ${b.blockWeeks} weeks${hasTest(b) ? " + test" : ""}` : `${b.weeks} weeks`}${b.active && wk >= 1 && wk <= b.weeks ? ` · now ${cyclePos(b, wk)}` : ""}</div>
+        <div class="muted">${dmy(b.start)} – ${b.active && !b.ended && wk <= b.weeks ? "~" : ""}${dmy(end)} · ${b.blockLens?.length > 1 ? `${b.blockLens.length} blocks · ${b.blockLens.join(" + ")} weeks${hasTest(b) ? " + test" : ""}` : nBlocks(b) > 1 ? `${nBlocks(b)} blocks × ${b.blockWeeks} weeks${hasTest(b) ? " + test" : ""}` : `${b.weeks} weeks`}${b.active && wk >= 1 && wk <= b.weeks ? ` · now ${cyclePos(b, wk)}` : b.active && wk > b.weeks ? " · finished" : ""}</div>
         <div class="muted">${b.lifts.map((l) => esc(cfgName(l))).join(" · ")}</div></div><span>${chev(open)}</span></div>
-    ${open ? `${b.lifts.map((l, li) => planTable(l, l.plan, b.active ? wk : 0, `setTestTarget(${b.id},${li},this.value)`)).join("")}
+    ${open ? `${b.active ? `<div class="muted">Weeks move on with training: each exercise goes to its next week once it's done, so a skipped week moves the end back.</div>` : ""}
+      ${b.lifts.map((l, li) => planTable(l, l.plan, b.active ? liftWeek(b, l) : 0, `setTestTarget(${b.id},${li},this.value)`)).join("")}
       <div class="row wrap">${hasTest(b)
         ? `<button class="btn-t" onclick="removeTestWeek(${b.id})">Remove test week</button>`
         : `<button class="btn-t" onclick="addTestWeek(${b.id})">${ic("plus")} Add test week</button>`}
