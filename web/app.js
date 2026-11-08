@@ -296,6 +296,16 @@ const METHODS = { rpe: ["RPE", "@", "RPE"], pct: ["% of 1RM", "@", "%"], kg: ["W
 const KINDS = [["TOP", "Top"], ["Back-off", "Back-off"], ["Set", "Set"], ["Extra", "Extra"]];
 const kindLabel = (k) => KINDS.find(([v]) => v === k)?.[1] ?? k;
 
+/**
+ * RPE / % of one week from the step-① range, which covers the whole cycle: block k starts "load / block" × k above
+ * the cycle start, and every block spans the same amount, so the last block ends exactly at the cycle end.
+ * E.g. 7 → 9 with +0.5 / block over 3 blocks: 7 → 8 · 7.5 → 8.5 · 8 → 9. Blocks added later continue the pattern.
+ */
+function cycleLoad(g, method, part, k, i, n) {
+  const a = num(g.def[`${method}${part}0`]) ?? 0, z = num(g.def[`${method}${part}1`]) ?? 0, step = num(g.cLd) ?? 0;
+  const nb = Math.max(1, parseInt(g.blocks) || 1), span = z - a - (nb - 1) * step;
+  return lerp(a + k * step, a + k * step + span, i, n);
+}
 /** One block of the template from the step-① scheme; k = block index (0-based), n = weeks. */
 function genBlock(g, k, model = g.def.model, n = Math.max(1, parseInt(g.weeks) || 1), method = g.def.method) {
   const d = g.def, cl = (num(g.cLd) ?? 0) * k;
@@ -304,7 +314,7 @@ function genBlock(g, k, model = g.def.model, n = Math.max(1, parseInt(g.weeks) |
   const reps = (a, step, blk, i) => Math.max(1, Math.round(a + k * blk + i * step));
   const load = (part, i) => {
     if (method === "kg") return (num(d.kgStep) || 0) * i + cl + (part === "B" ? num(d.boKg) ?? 0 : 0);
-    const v = lerp(num(d[`${method}${part}0`]) ?? 0, num(d[`${method}${part}1`]) ?? 0, i, n) + cl;
+    const v = cycleLoad(g, method, part, k, i, n);
     return method === "rpe" ? Math.min(10, v) : v;
   };
   const boSets = Math.max(0, parseInt(d.boSets) || 0);
@@ -1636,9 +1646,10 @@ function beStep1() {
   const be = ui.be, g = be.gen, d = g.def, f = field("ui.be.gen", g), fp = fieldP("ui.be.gen", g), fd = field("ui.be.gen.def", d), fpd = fieldP("ui.be.gen.def", d);
   const n = parseInt(g.weeks) || 0, nb = Math.max(1, parseInt(g.blocks) || 1), total = n * nb + (g.test ? 1 : 0), tb = d.model !== "drop", m = d.method;
   const seg = (key, opts, extra = () => "") => `<div class="seg">${opts.map(([v, l]) => `<button class="${d[key] === v ? "sel" : ""}" onclick="ui.be.gen.def.${key}='${v}';${extra(v)}render()">${l}</button>`).join("")}</div>`;
+  const cyc = nb > 1 ? "cycle " : "";
   const ranges = {
-    rpe: `<div class="row">${fd("Top RPE start", "rpeT0")}${fd("→ end", "rpeT1")}</div>${tb ? `<div class="row">${fd("Back-off RPE start", "rpeB0")}${fd("→ end", "rpeB1")}</div>` : ""}`,
-    pct: `<div class="row">${fd("Top % start", "pctT0")}${fd("→ end", "pctT1")}</div>${tb ? `<div class="row">${fd("Back-off % start", "pctB0")}${fd("→ end", "pctB1")}</div>` : ""}`,
+    rpe: `<div class="row">${fd(`Top RPE ${cyc}start`, "rpeT0")}${fd("→ end", "rpeT1")}</div>${tb ? `<div class="row">${fd(`Back-off RPE ${cyc}start`, "rpeB0")}${fd("→ end", "rpeB1")}</div>` : ""}`,
+    pct: `<div class="row">${fd(`Top % ${cyc}start`, "pctT0")}${fd("→ end", "pctT1")}</div>${tb ? `<div class="row">${fd(`Back-off % ${cyc}start`, "pctB0")}${fd("→ end", "pctB1")}</div>` : ""}`,
     kg: `<div class="row">${fd("+kg / week", "kgStep")}${tb ? fd("Back-off kg vs top", "boKg") : ""}</div><div class="muted">Each exercise's start kg is set in step ②.</div>`,
   }[m];
   const r0 = num(g.cR0) ?? 5, b0 = num(g.bR0) ?? r0, rd = num(d.rDw) ?? 0, bd = num(d.bDw) ?? rd;
@@ -1675,6 +1686,9 @@ function beStep1() {
     ${nb > 1 ? `<div class="card col"><div class="title">Block to block</div>
       <div class="row">${f(tb ? "Top reps / block" : "Reps / block", "cRd")}${tb ? fp("Back-off reps / block", "bRd", g.cRd, "decimal") : ""}</div>
       <div class="row">${f(`Load / block (${METHODS[m][2]})`, "cLd")}</div>
+      ${m !== "kg" && n > 0 ? `<div class="muted">${(tb ? [["T", "Top"], ["B", "Back-off"]] : [["T", ""]]).map(([part, l]) => `${l ? `${l}: ` : ""}${Array.from({ length: nb }, (_, k) =>
+        `${fmt(cycleLoad(g, m, part, k, 0, n))} → ${fmt(cycleLoad(g, m, part, k, n - 1, n))}`).join(" · ")}`).join("<br>")} ${METHODS[m][2]}</div>
+        ${(() => { const sp = (num(d[`${m}T1`]) ?? 0) - (num(d[`${m}T0`]) ?? 0) - (nb - 1) * (num(g.cLd) ?? 0); return sp < 0 ? `<div class="muted" style="color:var(--amber)">Load / block is larger than the range allows — each block goes down inside.</div>` : ""; })()}` : ""}
       <div class="muted">Each block can follow a different pattern in step ②.</div></div>` : ""}
     <button class="btn" onclick="generateNow()">Generate template →</button>`;
 }
