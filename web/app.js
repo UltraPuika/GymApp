@@ -1470,7 +1470,8 @@ function blockCard(b) {
       <div class="row wrap">${hasTest(b)
         ? `<button class="btn-t" onclick="removeTestWeek(${b.id})">Remove test week</button>`
         : `<button class="btn-t" onclick="addTestWeek(${b.id})">${ic("plus")} Add test week</button>`}
-        <span class="grow"></span><button class="btn-t" onclick="openBlockBuilder(${b.id})">Copy as new</button>
+        <span class="grow"></span>${b.builder ? `<button class="btn-t" onclick="editBlock(${b.id})">Edit</button>` : ""}
+        <button class="btn-t" onclick="openBlockBuilder(${b.id})">Copy as new</button>
         <button class="btn-t red" onclick="deleteBlock(${b.id})">Delete</button></div>` : ""}
   </div>`;
 }
@@ -1604,6 +1605,23 @@ function liftT(L) {
 }
 const testTarget = (L) => num(L.testMax) || defaultTestTarget({ lift: L.lift, oneRm: L.one?.[""] });
 
+/**
+ * Edit a saved cycle in the builder; saving updates it in place (same cycle, still active, logs untouched).
+ * Test weeks and test targets changed on the cycle card after saving are carried over.
+ */
+function editBlock(id) {
+  const src = db.blocks.find((b) => b.id === id);
+  if (!src?.builder) return;
+  const be = { ...clone(src.builder), name: src.name, start: src.start, editId: src.id, step: 2, scope: null, gform: null, xform: null, vopen: null };
+  const test = hasTest(src);
+  [be.tmpl, ...be.lifts.map((L) => L.tmpl)].filter(Boolean).forEach((t) => (t.test = test));
+  be.lifts.forEach((L) => {
+    const last = src.lifts.find((l) => l.lift === L.lift)?.plan.at(-1);
+    if (last?.test) L.testMax = fmt(last.sets.at(-1).w);
+  });
+  ui.be = be;
+  $("main").scrollTop = 0; render();
+}
 function openBlockBuilder(copyId) {
   const src = copyId ? db.blocks.find((b) => b.id === copyId) : null;
   if (src?.builder) {
@@ -1637,7 +1655,7 @@ function renderBlockBuilder() {
   const be = ui.be;
   if (be.scope != null && !be.lifts[be.scope]?.custom) be.scope = null;
   const lift = be.step === 2 && be.scope != null ? be.lifts[be.scope].lift : null;
-  setTop(lift ? `${esc(lift)} template` : "New cycle", ["Generate a template from a weekly scheme", "Edit the template · sets, reps, blocks, variations", "Check each exercise's weights, then save"][be.step - 1],
+  setTop(lift ? `${esc(lift)} template` : be.editId ? "Edit cycle" : "New cycle", ["Generate a template from a weekly scheme", "Edit the template · sets, reps, blocks, variations", "Check each exercise's weights, then save"][be.step - 1],
     `<button class="icon" onclick="ui.be=null;render()">${ic("x")}</button>`);
   const steps = `<div class="seg steps">${[[1, "① Template"], [2, "② Edit"], [3, "③ Exercises"]].map(([k, l]) =>
     `<button class="${be.step === k ? "sel" : ""}" ${k > 1 && !be.tmpl ? "disabled" : ""} onclick="goStep(${k})">${l}</button>`).join("")}</div>`;
@@ -1898,7 +1916,7 @@ function beStep3() {
       <span class="muted"><span class="lime">━</span> kg${t.method === "kg" ? "" : " · % of 1RM"} &nbsp; ▮ reps</span></div>
       ${stairsChart({ lift: L.lift, oneRm: L.one?.[""], bw: L.bw }, liftPlan(t, L), t.method !== "kg")}</div>
     ${be.lifts.map((x, i) => liftCard(x, i)).join("")}
-    <button class="btn" onclick="saveBlock()">Save & set active</button>`;
+    <button class="btn" onclick="saveBlock()">${be.editId ? "Save changes" : "Save & set active"}</button>`;
 }
 function liftCard(L, i) {
   const t = liftT(L), W = liftWeights(t, L), kg = t.method === "kg", bw = liftBw(L);
@@ -2045,9 +2063,12 @@ function saveBlock() {
   const be = ui.be;
   if (!be.name.trim()) { goStep(1); return alert("Give the cycle a name."); }
   if (!be.lifts.length) return alert("Add at least one exercise.");
+  const editing = be.editId ? db.blocks.find((b) => b.id === be.editId) : null;
   const cur = activeBlock();
-  if (cur && !confirm(`This ends the active cycle "${cur.name}". Continue?`)) return;
-  if (cur) { cur.active = false; cur.ended = addDays(be.start, -1) < cur.start ? cur.start : addDays(be.start, -1); }
+  if (!editing) {
+    if (cur && !confirm(`This ends the active cycle "${cur.name}". Continue?`)) return;
+    if (cur) { cur.active = false; cur.ended = addDays(be.start, -1) < cur.start ? cur.start : addDays(be.start, -1); }
+  }
   const plans = be.lifts.map((L) => ({ L, t: liftT(L), core: liftPlan(liftT(L), L) }));
   const coreN = Math.max(...plans.map((p) => p.core.length)), anyTest = plans.some((p) => p.t.test);
   const lifts = plans.map(({ L, t, core }) => ({
@@ -2056,9 +2077,11 @@ function saveBlock() {
     plan: [...core, ...Array.from({ length: coreN - core.length }, () => ({ sets: [] })), ...(t.test ? [testWeek(L.lift, testTarget(L), liftBw(L))] : [])],
   }));
   const lens = be.tmpl.blocks.map((b) => b.weeks.length);
-  db.blocks.push({ id: nextId(), name: be.name.trim(), start: be.start, weeks: coreN + (anyTest ? 1 : 0), blocks: lens.length, blockLens: lens, active: true, lifts,
-    builder: clone({ ...be, step: 2, scope: null, gform: null }) });
-  ui.be = null; save(); toast("Cycle saved and active");
+  const data = { name: be.name.trim(), start: be.start, weeks: coreN + (anyTest ? 1 : 0), blocks: lens.length, blockLens: lens, lifts,
+    builder: clone({ ...be, step: 2, scope: null, gform: null, xform: null, vopen: null, editId: undefined }) };
+  if (editing) Object.assign(editing, data);
+  else db.blocks.push({ id: nextId(), ...data, active: true });
+  ui.be = null; save(); toast(editing ? "Cycle updated" : "Cycle saved and active");
 }
 
 function rpeCard() {
